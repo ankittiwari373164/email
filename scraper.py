@@ -1,51 +1,60 @@
 """
 Category-driven lead scraper.
 
-Flow, given a category (+ optional city / extra keywords) typed into the
-dashboard:
-  1. Build a search query and pull result URLs from DuckDuckGo's HTML
-     endpoint (no API key needed).
-  2. Visit each result site (homepage + a "contact/about" page if we can
-     find one), pull out any email addresses on the page.
-  3. Skip anything that's obviously not a real contact address (images,
-     example.com, wixpress/sentry-style noise, etc).
-  4. MX-check the domain so `leads.mx_valid` is accurate before anything
-     ever gets emailed.
-  5. Insert into the Supabase `leads` table (deduped by email, via db.insert_lead —
-     the email column has a UNIQUE constraint so this is a global de-dupe,
-     not just per-run).
+v2 changes (fixing "Found 0 candidate sites" every time):
+  - Search failures used to fail SILENTLY (return an empty list, no error
+    logged) — the #1 real-world cause is a search engine blocking/rate-
+    limiting the *cloud host's* IP (Render/AWS datacenter IPs get this a
+    lot from DuckDuckGo especially). Every search attempt now logs its
+    HTTP status / exception to the job log, so you can actually see why.
+  - One query, one engine used to be it. Now: several query VARIANTS per
+    category (plain, +city, "near me"-style, directory-flavored) tried
+    across MULTIPLE search backends (DuckDuckGo HTML, then Bing HTML as a
+    fallback) until enough candidate URLs are collected or we run out of
+    variants.
+  - Added India-focused business-directory targeting (JustDial, IndiaMART,
+    Sulekha, Yellow Pages India) via `site:` filtered queries — these
+    directories list thousands of businesses per category/city and tend
+    to be far more scrape-friendly than trying to find + crawl individual
+    company websites one by one.
+
+Flow, given a category (+ optional city / extra keywords):
+  1. Build several query variants, try each against DuckDuckGo then Bing
+     until we have enough candidate URLs (or run out of variants).
+  2. Visit each result site (homepage + a contact/about page if needed),
+     pull out any email addresses.
+  3. Filter obvious noise (images, example.com, sentry, etc).
+  4. MX-check the domain.
+  5. Insert into the Supabase `leads` table (deduped by email — UNIQUE
+     constraint means an email is never stored twice, across any
+     category/city/run).
 
 Runs in a background thread kicked off from app.py; progress is written to
 the `scrape_jobs` row so the dashboard can poll it.
-
-Respect the sites you're crawling: this only reads publicly served pages
-(no login walls, no bypassing robots/captchas), uses a normal desktop
-user-agent, and paces requests. You're responsible for making sure your use
-of any addresses you collect this way complies with the anti-spam law in
-your and your recipients' jurisdictions (CAN-SPAM, DPDP, GDPR/PECR, etc) —
-the sender.py footer + unsubscribe link handles the outgoing-email side of
-that, but consent/legitimate-interest requirements for *collecting* the
-address are on you to check per source.
 """
 import re
 import time
 import socket
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, quote_plus
 
 import requests
 from bs4 import BeautifulSoup
 
+import config
 import db
 
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-HEADERS = {"User-Agent": USER_AGENT}
-REQUEST_TIMEOUT = 10
+HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept-Language": "en-US,en;q=0.9",
+}
+REQUEST_TIMEOUT = 12
 PAGE_FETCH_DELAY = 1.5  # seconds between site fetches — be a polite crawler
+SEARCH_DELAY = 2.0      # seconds between search-engine requests
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
-# Domains / patterns that show up constantly but are never real leads
 JUNK_DOMAINS = {
     "example.com", "sentry.io", "wixpress.com", "godaddy.com", "schema.org",
     "w3.org", "gmail.com.png", "yourdomain.com", "domain.com",
@@ -54,6 +63,18 @@ JUNK_LOCALPARTS = {"info@example", "test", "noreply", "no-reply", "donotreply"}
 IMAGE_EXT_RE = re.compile(r"\.(png|jpe?g|gif|svg|webp)$", re.I)
 
 CONTACT_LINK_WORDS = ("contact", "about", "reach", "get-in-touch")
+
+# Directories that list thousands of small/local businesses per
+# category+city and are generally easier to get results from than hunting
+# down individual company websites. Adjust/add for your market — these
+# default to India since that's what your leads.db categories look like
+# (real estate consultant / interior designer / etc, Delhi/Bangalore/Mumbai).
+DIRECTORY_SITES = [
+    "justdial.com",
+    "indiamart.com",
+    "sulekha.com",
+    "yellowpages.in",
+]
 
 
 def _clean_emails(raw_text):
@@ -71,9 +92,94 @@ def _clean_emails(raw_text):
     return found
 
 
-def search_duckduckgo(query, max_results=20):
-    """Return a list of result URLs for `query` using DuckDuckGo's
-    no-JS HTML endpoint (works without an API key)."""
+def build_query_variants(category, city=None, keywords=None):
+    """Several differently-worded queries to try in order, so one bad
+    phrasing (or one search engine having a bad day) doesn't zero out the
+    whole scrape."""
+    variants = []
+
+    base = category
+    loc = f" {city}" if city else ""
+    kw = f" {keywords}" if keywords else ""
+
+    variants.append(f"{base}{loc}{kw} contact email")
+    variants.append(f"{base}{loc}{kw} email address")
+    variants.append(f"best {base}{loc}{kw}")
+    variants.append(f"{base}{loc}{kw} contact us")
+    variants.append(f"{base}{loc}{kw}")  # plain, no suffix — sometimes the extra words hurt
+
+    # Directory-targeted variants — these tend to return far more usable
+    # results per query than open web search for local/small businesses.
+    for site in DIRECTORY_SITES:
+        variants.append(f"{base}{loc} site:{site}")
+
+    # de-dupe while preserving order
+    seen = set()
+    out = []
+    for v in variants:
+        v = v.strip()
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def search_google_cse(query, max_results=20, log_fn=None):
+    """Google Custom Search JSON API — a real API, not scraping, so it
+    doesn't get 403'd like DuckDuckGo/Bing HTML do. Needs
+    config.GOOGLE_CSE_API_KEY + config.GOOGLE_CSE_CX (see config.py for
+    free setup instructions). Returns [] immediately (no wasted requests)
+    if those aren't configured, so the fallback engines get a chance."""
+    if not config.GOOGLE_CSE_API_KEY or not config.GOOGLE_CSE_CX:
+        if log_fn:
+            log_fn("    Google CSE not configured (GOOGLE_CSE_API_KEY/GOOGLE_CSE_CX) — skipping")
+        return []
+
+    urls = []
+    # Google CSE returns max 10 results per call; page through with `start`
+    # for up to max_results (capped at 100 total per API limits).
+    start = 1
+    while len(urls) < max_results and start <= 91:
+        try:
+            resp = requests.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={
+                    "key": config.GOOGLE_CSE_API_KEY,
+                    "cx": config.GOOGLE_CSE_CX,
+                    "q": query,
+                    "start": start,
+                    "num": min(10, max_results - len(urls)),
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if log_fn:
+                log_fn(f"    Google CSE '{query}' (start={start}) -> HTTP {resp.status_code}")
+            if resp.status_code != 200:
+                if log_fn:
+                    log_fn(f"    -> {resp.text[:200]}")
+                break
+            data = resp.json()
+        except requests.RequestException as e:
+            if log_fn:
+                log_fn(f"    Google CSE '{query}' -> FAILED: {e}")
+            break
+
+        items = data.get("items", [])
+        if not items:
+            break
+        for item in items:
+            link = item.get("link")
+            if link:
+                urls.append(link)
+        start += 10
+        time.sleep(0.3)  # stay well under quota-per-second limits
+
+    if log_fn:
+        log_fn(f"    -> {len(urls)} result(s) total")
+    return urls[:max_results]
+
+
+def search_duckduckgo(query, max_results=20, log_fn=None):
     urls = []
     try:
         resp = requests.post(
@@ -82,8 +188,12 @@ def search_duckduckgo(query, max_results=20):
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
+        if log_fn:
+            log_fn(f"    DuckDuckGo '{query}' -> HTTP {resp.status_code}")
         resp.raise_for_status()
-    except requests.RequestException:
+    except requests.RequestException as e:
+        if log_fn:
+            log_fn(f"    DuckDuckGo '{query}' -> FAILED: {e}")
         return urls
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -94,7 +204,6 @@ def search_duckduckgo(query, max_results=20):
         if len(urls) >= max_results:
             break
 
-    # Fallback selector in case DDG markup changes
     if not urls:
         for a in soup.select("a[href^='http']"):
             href = a.get("href")
@@ -103,7 +212,86 @@ def search_duckduckgo(query, max_results=20):
             if len(urls) >= max_results:
                 break
 
+    if log_fn:
+        log_fn(f"    -> {len(urls)} result(s)")
     return urls[:max_results]
+
+
+def search_bing(query, max_results=20, log_fn=None):
+    """Fallback search engine — tried when DuckDuckGo returns nothing for
+    a query, since a block/rate-limit on one engine doesn't necessarily
+    apply to the other."""
+    urls = []
+    try:
+        resp = requests.get(
+            f"https://www.bing.com/search?q={quote_plus(query)}&count=30",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if log_fn:
+            log_fn(f"    Bing '{query}' -> HTTP {resp.status_code}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        if log_fn:
+            log_fn(f"    Bing '{query}' -> FAILED: {e}")
+        return urls
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for li in soup.select("li.b_algo h2 a"):
+        href = li.get("href")
+        if href and href.startswith("http"):
+            urls.append(href)
+        if len(urls) >= max_results:
+            break
+
+    if log_fn:
+        log_fn(f"    -> {len(urls)} result(s)")
+    return urls[:max_results]
+
+
+SEARCH_BACKENDS = [search_google_cse, search_duckduckgo, search_bing]
+
+
+def collect_candidate_urls(category, city, keywords, max_results, log_fn=None):
+    """Try query variants across search backends until we have enough
+    URLs (or run out of variants). Returns a de-duped list of URLs, and
+    logs every attempt along the way so failures are visible."""
+    variants = build_query_variants(category, city, keywords)
+    collected = []
+    seen_domains = set()
+
+    for query in variants:
+        if len(collected) >= max_results:
+            break
+        for backend in SEARCH_BACKENDS:
+            if len(collected) >= max_results:
+                break
+            if log_fn:
+                log_fn(f"  Trying {backend.__name__} for: {query}")
+            try:
+                results = backend(query, max_results=max_results, log_fn=log_fn)
+            except Exception as e:
+                if log_fn:
+                    log_fn(f"    {backend.__name__} raised {type(e).__name__}: {e}")
+                results = []
+
+            new_count = 0
+            for url in results:
+                domain = urlparse(url).netloc
+                if domain and domain not in seen_domains:
+                    seen_domains.add(domain)
+                    collected.append(url)
+                    new_count += 1
+
+            time.sleep(SEARCH_DELAY)
+
+            if new_count > 0:
+                # This backend worked for this query — no need to also hit
+                # the (likely-blocked) fallback engines for the same query,
+                # move on to the next query variant instead.
+                break
+
+    return collected[:max_results]
 
 
 def _fetch(url):
@@ -153,16 +341,16 @@ def emails_from_site(url):
             if contact_html:
                 emails |= _clean_emails(contact_html)
 
-    # Only keep emails whose domain matches (or is a subdomain of) the site
-    # we're on, or plain gmail/other free providers business owners often
-    # list directly — this cuts down heavily on noise from footer widgets,
-    # ad scripts, etc pulled in from third-party domains.
     site_root = domain.replace("www.", "")
     kept = {e for e in emails if site_root in e.split("@")[-1]}
     if not kept and emails:
-        # nothing matched the site's own domain — still keep a max of 1
-        # generic address found on the page rather than discarding entirely
-        kept = set(list(emails)[:1])
+        # Directory pages (JustDial etc) list OTHER businesses' emails on
+        # a domain that obviously isn't the lead's own — keep everything
+        # found there rather than filtering by domain match.
+        if any(d in site_root for d in DIRECTORY_SITES):
+            kept = emails
+        else:
+            kept = set(list(emails)[:1])
 
     return kept, business_name
 
@@ -173,8 +361,6 @@ def has_mx_record(domain):
         answers = dns.resolver.resolve(domain, "MX", lifetime=5)
         return len(answers) > 0
     except Exception:
-        # Fall back to a plain A-record / socket check if dnspython isn't
-        # installed or the MX lookup fails for a transient reason.
         try:
             socket.gethostbyname(domain)
             return True
@@ -185,19 +371,18 @@ def has_mx_record(domain):
 def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
     """Entry point called on a background thread from app.py."""
     db.update_scrape_job(job_id, status="running")
-    db.append_scrape_job_log(job_id, f"Starting scrape for category='{category}' city='{city or ''}'")
+    log = lambda msg: db.append_scrape_job_log(job_id, msg)
+    log(f"Starting scrape for category='{category}' city='{city or ''}'")
 
-    query_parts = [category]
-    if city:
-        query_parts.append(city)
-    if keywords:
-        query_parts.append(keywords)
-    query_parts.append("contact email")
-    query = " ".join(query_parts)
+    urls = collect_candidate_urls(category, city, keywords, max_results, log_fn=log)
+    log(f"Total candidate sites collected: {len(urls)}")
 
-    db.append_scrape_job_log(job_id, f"Search query: {query}")
-    urls = search_duckduckgo(query, max_results=max_results)
-    db.append_scrape_job_log(job_id, f"Found {len(urls)} candidate sites")
+    if not urls:
+        log("No candidate sites found from any query/engine combination. "
+            "This usually means the search engines are blocking/rate-limiting "
+            "this server's IP (common on cloud hosts). Consider: trying again "
+            "later, using a narrower/different category or city, or adding "
+            "more directory sites to DIRECTORY_SITES in scraper.py.")
 
     sites_checked = 0
     emails_found = 0
@@ -210,7 +395,7 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
         try:
             found_emails, business_name = emails_from_site(url)
         except Exception as e:
-            db.append_scrape_job_log(job_id, f"  [skip] {domain}: {e}")
+            log(f"  [skip] {domain}: {e}")
             found_emails, business_name = set(), None
 
         for email in found_emails:
@@ -232,7 +417,7 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
             )
             if inserted:
                 emails_inserted += 1
-                db.append_scrape_job_log(job_id, f"  + {email}  ({domain}, mx_valid={mx_ok})")
+                log(f"  + {email}  ({domain}, mx_valid={mx_ok})")
 
         db.update_scrape_job(
             job_id,
@@ -242,20 +427,14 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
         )
         time.sleep(PAGE_FETCH_DELAY)
 
-    conn = db.get_conn()
-    conn.execute(
-        "INSERT INTO scrape_log (category, city, query, urls_found, emails_found, run_at) VALUES (?,?,?,?,?,?)",
-        (category, city, query, len(urls), emails_found, __import__("datetime").datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    conn.close()
+    from datetime import datetime
+    conn_log_row = (category, city, f"{category} {city or ''}".strip(), len(urls), emails_found, datetime.utcnow())
+    with db.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO scrape_log (category, city, query, urls_found, emails_found, run_at) VALUES (%s,%s,%s,%s,%s,%s)",
+            conn_log_row,
+        )
 
-    db.update_scrape_job(
-        job_id,
-        status="done",
-        finished_at=__import__("datetime").datetime.utcnow().isoformat(),
-    )
-    db.append_scrape_job_log(
-        job_id,
-        f"Done. Checked {sites_checked} sites, found {emails_found} emails, inserted {emails_inserted} new leads.",
-    )
+    db.update_scrape_job(job_id, status="done", finished_at=datetime.utcnow())
+    log(f"Done. Checked {sites_checked} sites, found {emails_found} emails, inserted {emails_inserted} new leads.")

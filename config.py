@@ -18,10 +18,7 @@ if not DATABASE_URL:
     )
 
 # ---------------- Gmail OAuth ----------------
-CLIENT_SECRET_FILE = os.environ.get(
-    "CLIENT_SECRET_FILE_PATH",
-    os.path.join(BASE_DIR, "client_secret.json")
-)
+CLIENT_SECRET_FILE = os.path.join(BASE_DIR, "credentials", "client_secret.json")
 TOKENS_DIR = os.path.join(BASE_DIR, "tokens")
 
 GMAIL_SCOPES = [
@@ -59,10 +56,47 @@ AUTO_AUTOMATION_ENABLED = os.environ.get("AUTO_AUTOMATION", "true").lower() != "
 
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production")
 
+EMAIL_FOOTER_TEMPLATE = """
 
+--
+{sender_name}
+{company_name}
+{company_address}
 
+Don't want these emails? Unsubscribe: {unsubscribe_link}
+"""
 
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Your Company Name")
+COMPANY_ADDRESS = os.environ.get("COMPANY_ADDRESS", "Your Company Address, City, India")
 
+# ---------------- Lead discovery (Scrape page) ----------------
+# DuckDuckGo/Bing HTML scraping got unreliable (both now return 403 to
+# simple scripted requests from most hosting IPs — confirmed, not just a
+# Render-specific block). Google's Custom Search JSON API is the reliable
+# path: a real API, not scraping, with a genuine free tier (100
+# queries/day; $5/1000 after that).
+#
+# IMPORTANT: as of Jan 20 2026 Google discontinued "Search the entire web"
+# for NEW Programmable Search Engines — new engines must specify a "Sites
+# to search" allowlist (up to 50 domains) instead of open web search. This
+# actually suits lead-gen well: point it at business directories
+# (justdial.com, indiamart.com, sulekha.com, yellowpages.in, tradeindia.com,
+# indianyellowpages.com, ...) rather than the open web — a single directory
+# listing page has dozens of businesses on it, which is a better yield per
+# API call than hunting individual company sites one at a time anyway.
+#
+# Setup (free, ~5 min):
+#   1. https://programmablesearchengine.google.com/ -> Add -> under "Sites
+#      to search" add the directory domains above (one at a time, up to 50)
+#      -> create. Copy the Search engine ID (that's your CX) from Basic.
+#   2. https://console.cloud.google.com/apis/library/customsearch.googleapis.com
+#      -> Enable, on the same project as your Gmail OAuth client is fine.
+#   3. Credentials -> Create Credentials -> API key. Copy it.
+#   4. Set both env vars below.
+# Without these set, the scraper falls back to DuckDuckGo/Bing HTML
+# scraping best-effort (may return 0 results if blocked — see scraper.py).
+GOOGLE_CSE_API_KEY = os.environ.get("GOOGLE_CSE_API_KEY", "")
+GOOGLE_CSE_CX = os.environ.get("GOOGLE_CSE_CX", "")
 
 # ---------------- Email verification ----------------
 # SMTP handshake verification (RCPT TO without sending) is best-effort —
