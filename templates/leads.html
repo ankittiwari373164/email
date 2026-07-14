@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Leads</h3>
+<form class="row g-2 mb-3" id="filter-form">
+  <div class="col-auto">
+    <select name="status" class="form-select">
+      <option value="">All statuses</option>
+      {% for s in ['new','contacted','replied','bounced','unsubscribed'] %}
+        <option value="{{s}}" {{ 'selected' if status==s else '' }}>{{s}}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <select name="verify_status" class="form-select">
+      <option value="">All verification states</option>
+      {% for v in ['unverified','valid','invalid','risky'] %}
+        <option value="{{v}}" {{ 'selected' if verify_status==v else '' }}>{{v}}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto"><input class="form-control" name="category" placeholder="category" value="{{ category or '' }}"></div>
+  <div class="col-auto"><input class="form-control" name="city" placeholder="city" value="{{ city or '' }}"></div>
+  <div class="col-auto"><button class="btn btn-primary">Filter</button></div>
+  <div class="col-auto">
+    <button type="button" class="btn btn-outline-danger" id="delete-filtered-btn">Delete all matching filter</button>
+  </div>
+</form>
+
+<div class="mb-2">
+  <button type="button" class="btn btn-sm btn-outline-danger" id="bulk-delete-btn">Delete selected</button>
+  <button type="button" class="btn btn-sm btn-outline-info" id="verify-unverified-btn">Verify unverified (up to 100)</button>
+  <span id="verify-status-msg" class="text-muted"></span>
+</div>
+
+<form id="bulk-form" method="post" action="/leads/bulk-delete">
+<table class="table table-sm table-striped bg-white">
+  <thead><tr>
+    <th><input type="checkbox" id="select-all"></th>
+    <th>Email</th><th>Business</th><th>Category</th><th>City</th><th>Status</th>
+    <th>Verify</th><th>Sent via</th><th>Last contact</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for l in leads %}
+    <tr>
+      <td><input type="checkbox" name="lead_ids" value="{{ l.id }}"></td>
+      <td>{{ l.email }}</td>
+      <td>{{ l.business_name or '' }}</td>
+      <td>{{ l.category or '' }}</td>
+      <td>{{ l.city or '' }}</td>
+      <td><span class="badge bg-secondary">{{ l.status }}</span></td>
+      <td>
+        <span class="badge {{ 'bg-success' if l.verify_status=='valid' else ('bg-danger' if l.verify_status=='invalid' else ('bg-warning text-dark' if l.verify_status=='risky' else 'bg-light text-dark')) }}"
+              id="verify-badge-{{ l.id }}" title="{{ l.verify_reason or '' }}">{{ l.verify_status or 'unverified' }}</span>
+        <button type="button" class="btn btn-sm btn-link p-0 verify-one-btn" data-id="{{ l.id }}">verify</button>
+      </td>
+      <td>{{ l.gmail_account_used or '' }}</td>
+      <td>{{ l.last_contacted_at or '' }}</td>
+      <td>
+        {% if l.thread_id %}<a href="/thread/{{ l.thread_id }}">View thread</a>{% endif %}
+        <form method="post" action="/leads/{{ l.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Delete lead {{ l.email }}?');">
+          <button class="btn btn-sm btn-outline-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="text-muted">No leads match this filter.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</form>
+
+<form id="delete-filtered-form" method="post" action="/leads/delete-filtered" style="display:none">
+  <input type="hidden" name="status" value="{{ status or '' }}">
+  <input type="hidden" name="category" value="{{ category or '' }}">
+  <input type="hidden" name="city" value="{{ city or '' }}">
+</form>
+
+<script>
+document.getElementById('select-all').addEventListener('change', (e) => {
+  document.querySelectorAll('input[name="lead_ids"]').forEach(cb => cb.checked = e.target.checked);
+});
+
+document.getElementById('bulk-delete-btn').addEventListener('click', () => {
+  const checked = document.querySelectorAll('input[name="lead_ids"]:checked');
+  if (checked.length === 0) { alert('Select at least one lead first.'); return; }
+  if (!confirm(`Delete ${checked.length} selected lead(s)?`)) return;
+  document.getElementById('bulk-form').submit();
+});
+
+document.getElementById('delete-filtered-btn').addEventListener('click', () => {
+  if (!confirm('Delete ALL leads matching the current filter? This cannot be undone.')) return;
+  const form = document.getElementById('filter-form');
+  const target = document.getElementById('delete-filtered-form');
+  target.querySelector('[name=status]').value = form.status.value;
+  target.querySelector('[name=category]').value = form.category.value;
+  target.querySelector('[name=city]').value = form.city.value;
+  target.submit();
+});
+
+document.querySelectorAll('.verify-one-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.id;
+    btn.textContent = '...';
+    const res = await fetch(`/api/leads/${id}/verify`, {method: 'POST'});
+    const data = await res.json();
+    const badge = document.getElementById(`verify-badge-${id}`);
+    badge.textContent = data.status;
+    badge.title = data.reason;
+    badge.className = 'badge ' + (data.status === 'valid' ? 'bg-success' : data.status === 'invalid' ? 'bg-danger' : data.status === 'risky' ? 'bg-warning text-dark' : 'bg-light text-dark');
+    btn.textContent = 'verify';
+  });
+});
+
+document.getElementById('verify-unverified-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('verify-unverified-btn');
+  const msg = document.getElementById('verify-status-msg');
+  btn.disabled = true;
+  msg.textContent = 'Verifying...';
+  try {
+    const res = await fetch('/api/leads/verify-unverified', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({limit: 100})
+    });
+    const data = await res.json();
+    msg.textContent = `Checked ${data.checked} lead(s). Refresh to see updated badges.`;
+  } catch (e) {
+    msg.textContent = 'Verification failed — see console.';
+  }
+  btn.disabled = false;
+});
+</script>
+{% endblock %}

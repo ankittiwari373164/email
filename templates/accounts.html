@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Gmail Accounts (5 needed, 500/day each)</h3>
+<a class="btn btn-primary mb-3" href="/accounts/connect">+ Connect a Gmail account</a>
+
+<table class="table table-bordered bg-white">
+  <thead><tr><th>#</th><th>Email</th><th>Status</th><th>Sent Today</th><th>Daily Limit</th><th>Last Error</th><th></th></tr></thead>
+  <tbody>
+    {% for a in accounts %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ a.email }}</td>
+      <td><span class="badge {{ 'bg-success' if a.status=='active' else 'bg-danger' }}">{{ a.status }}</span></td>
+      <td>{{ a.sent_today }}</td>
+      <td>{{ a.daily_limit }}</td>
+      <td class="text-danger small">{{ a.last_error or '' }}</td>
+      <td>
+        {% if a.status != 'active' %}
+        <form method="post" action="/accounts/{{ a.id }}/reactivate" style="display:inline">
+          <button class="btn btn-sm btn-outline-success">Reactivate</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if accounts|length < 5 %}
+<div class="alert alert-warning">
+  You've connected {{ accounts|length }}/5 accounts. Click "Connect a Gmail account" again,
+  and sign in with the next Gmail account each time.
+</div>
+{% endif %}
+
+<div class="alert alert-secondary">
+  <strong>First-time setup:</strong> you need a Google Cloud OAuth client (client_secret.json)
+  before any account will connect. See the README in this project for step-by-step instructions.
+</div>
+<div class="alert alert-info">
+  An account only shows <strong>error</strong> now for real account-level problems
+  (expired/revoked OAuth token, whole-account send limit) — a single bad
+  recipient address no longer takes the account offline. If you see
+  "error", click Reactivate after fixing the cause (usually: reconnect the
+  account via the button above if the token expired).
+</div>
+{% endblock %}

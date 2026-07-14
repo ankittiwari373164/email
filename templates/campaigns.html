@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Campaigns</h3>
+
+<div class="card p-3 mb-4">
+  <h5>New Campaign</h5>
+  <form method="post" action="/campaigns/new" class="row g-2">
+    <div class="col-md-4"><input class="form-control" name="name" placeholder="Campaign name" required></div>
+    <div class="col-md-4"><input class="form-control" name="category_filter" placeholder="Category filter (optional, e.g. digital marketing agency)"></div>
+    <div class="col-md-4"><input class="form-control" name="city_filter" placeholder="City filter (optional, e.g. Delhi)"></div>
+    <div class="col-12"><input class="form-control" name="subject_template" placeholder="Subject — use {business_name}, {city}, {category}" required></div>
+    <div class="col-12"><textarea class="form-control" name="body_template" rows="6" placeholder="Body — use {business_name}, {city}, {category}, {email}" required></textarea></div>
+    <div class="col-12"><button class="btn btn-primary">Create Campaign</button></div>
+  </form>
+</div>
+
+<p class="text-muted">
+  Setting a campaign to <strong>Running</strong> makes it eligible for full
+  automation — the background scheduler sends a batch for it on an interval
+  (AUTO_SEND_INTERVAL_SECONDS in config.py, default 10 min) with no clicking
+  required. "Send 50" still works any time for a manual push regardless of status.
+</p>
+
+<table class="table table-bordered bg-white">
+  <thead><tr><th>Name</th><th>Subject</th><th>Category</th><th>City</th><th>Status</th><th>Action</th></tr></thead>
+  <tbody>
+  {% for c in campaigns %}
+    <tr>
+      <td>{{ c.name }}</td>
+      <td>{{ c.subject_template }}</td>
+      <td>{{ c.category_filter or 'any' }}</td>
+      <td>{{ c.city_filter or 'any' }}</td>
+      <td><span class="badge {{ 'bg-success' if c.status=='running' else ('bg-secondary' if c.status=='draft' else 'bg-warning text-dark') }}" id="status-{{ c.id }}">{{ c.status }}</span></td>
+      <td>
+        <button class="btn btn-sm btn-success send-btn" data-id="{{ c.id }}">Send 50</button>
+        <a class="btn btn-sm btn-outline-primary" href="/campaigns/{{ c.id }}/edit">Edit</a>
+        {% if c.status == 'running' %}
+          <button class="btn btn-sm btn-outline-warning toggle-btn" data-id="{{ c.id }}" data-status="paused">Pause auto-send</button>
+        {% else %}
+          <button class="btn btn-sm btn-outline-success toggle-btn" data-id="{{ c.id }}" data-status="running">Run automatically</button>
+        {% endif %}
+        <form method="post" action="/campaigns/{{ c.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Delete campaign \'{{ c.name }}\'? This cannot be undone.');">
+          <button class="btn btn-sm btn-outline-danger">Delete</button>
+        </form>
+        <span class="result" id="result-{{ c.id }}"></span>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="text-muted">No campaigns yet — create one above.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<script>
+document.querySelectorAll('.send-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.id;
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    const res = await fetch(`/api/campaigns/${id}/send`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({max_sends: 50})
+    });
+    const data = await res.json();
+    document.getElementById(`result-${id}`).textContent = `Sent ${data.sent}`;
+    btn.disabled = false;
+    btn.textContent = 'Send 50';
+  });
+});
+
+document.querySelectorAll('.toggle-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.id;
+    const newStatus = btn.dataset.status;
+    await fetch(`/api/campaigns/${id}/status`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status: newStatus})
+    });
+    location.reload();
+  });
+});
+</script>
+{% endblock %}

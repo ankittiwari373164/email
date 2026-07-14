@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Edit Campaign</h3>
+
+<div class="card p-3 mb-4">
+  <form method="post" action="/campaigns/{{ campaign.id }}/edit" class="row g-2">
+    <div class="col-md-4"><input class="form-control" name="name" value="{{ campaign.name }}" required></div>
+    <div class="col-md-4"><input class="form-control" name="category_filter" placeholder="Category filter (optional)" value="{{ campaign.category_filter or '' }}"></div>
+    <div class="col-md-4"><input class="form-control" name="city_filter" placeholder="City filter (optional)" value="{{ campaign.city_filter or '' }}"></div>
+    <div class="col-12"><input class="form-control" name="subject_template" value="{{ campaign.subject_template }}" required></div>
+    <div class="col-12"><textarea class="form-control" name="body_template" rows="10" required>{{ campaign.body_template }}</textarea></div>
+    <div class="col-12">
+      <button class="btn btn-primary">Save Changes</button>
+      <a class="btn btn-outline-secondary" href="/campaigns">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

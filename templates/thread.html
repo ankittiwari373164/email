@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Thread {% if lead %}with {{ lead.business_name or lead.email }}{% endif %}</h3>
+<a href="/leads">&larr; back to leads</a>
+
+{% for m in messages %}
+<div class="card mb-2 {{ 'border-primary' if m.direction=='sent' else 'border-success' }}">
+  <div class="card-header d-flex justify-content-between">
+    <span><strong>{{ 'You' if m.direction=='sent' else m.from_addr }}</strong> &rarr; {{ m.to_addr }}</span>
+    <span class="text-muted small">{{ m.created_at }}</span>
+  </div>
+  <div class="card-body">
+    <div class="fw-bold">{{ m.subject }}</div>
+    <pre style="white-space: pre-wrap; font-family: inherit;">{{ m.body }}</pre>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

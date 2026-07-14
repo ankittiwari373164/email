@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Replies</h3>
+<button class="btn btn-outline-primary mb-3" id="check-now">Check for new replies now</button>
+<span id="check-result"></span>
+
+<table class="table table-striped bg-white">
+  <thead><tr><th>From</th><th>Business</th><th>Subject</th><th>Snippet</th><th>Received</th><th></th></tr></thead>
+  <tbody>
+  {% for r in replies %}
+    <tr>
+      <td>{{ r.from_addr }}</td>
+      <td>{{ r.business_name or r.lead_email }}</td>
+      <td>{{ r.subject }}</td>
+      <td>{{ r.snippet }}</td>
+      <td>{{ r.created_at }}</td>
+      <td><a href="/thread/{{ r.thread_id }}">Open thread</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6">No replies yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<script>
+document.getElementById('check-now').addEventListener('click', async () => {
+  const res = await fetch('/api/replies/check-now', {method: 'POST'});
+  const data = await res.json();
+  document.getElementById('check-result').textContent = `Found ${data.new_replies} new replies. Reloading...`;
+  setTimeout(() => location.reload(), 1200);
+});
+</script>
+{% endblock %}

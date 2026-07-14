@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Scrape leads by category</h3>
+<p class="text-muted">
+  Type a category (e.g. "dentists", "interior designers", "real estate agents").
+  Add a city to narrow it down. This searches the web, visits business
+  sites, and pulls contact emails into your Leads list — new leads only,
+  duplicates are skipped automatically.
+</p>
+
+<form class="row g-2 mb-4" method="post" action="{{ url_for('scrape_start') }}">
+  <div class="col-auto">
+    <input class="form-control" name="category" placeholder="Category (required)" list="category-suggestions" required>
+    <datalist id="category-suggestions">
+      {% for c in categories %}<option value="{{ c }}">{% endfor %}
+    </datalist>
+  </div>
+  <div class="col-auto"><input class="form-control" name="city" placeholder="City (optional)"></div>
+  <div class="col-auto"><input class="form-control" name="keywords" placeholder="Extra keywords (optional)"></div>
+  <div class="col-auto">
+    <input class="form-control" style="width:110px" type="number" name="max_results" value="20" min="1" max="100" title="Max sites to check">
+  </div>
+  <div class="col-auto"><button class="btn btn-primary">Start scrape</button></div>
+</form>
+
+<h5>Jobs</h5>
+<table class="table table-sm table-striped bg-white" id="jobs-table">
+  <thead>
+    <tr><th>ID</th><th>Category</th><th>City</th><th>Status</th><th>Sites checked</th><th>Emails found</th><th>New leads</th><th>Started</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr id="job-row-{{ j.id }}">
+      <td>{{ j.id }}</td>
+      <td>{{ j.category }}</td>
+      <td>{{ j.city or '' }}</td>
+      <td><span class="badge {{ 'bg-success' if j.status=='done' else ('bg-danger' if j.status=='error' else 'bg-warning text-dark') }}" data-field="status">{{ j.status }}</span></td>
+      <td data-field="sites_checked">{{ j.sites_checked }}</td>
+      <td data-field="emails_found">{{ j.emails_found }}</td>
+      <td data-field="emails_inserted">{{ j.emails_inserted }}</td>
+      <td>{{ j.started_at }}</td>
+      <td><button class="btn btn-sm btn-outline-secondary" onclick="toggleLog({{ j.id }})">Log</button></td>
+    </tr>
+    <tr id="job-log-{{ j.id }}" style="display:none">
+      <td colspan="9"><pre class="bg-light p-2 mb-0" style="max-height:200px;overflow:auto" data-field="log">{{ j.log }}</pre></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="text-muted">No scrape jobs yet — start one above.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<script>
+function toggleLog(id) {
+  const row = document.getElementById('job-log-' + id);
+  row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+// Poll every 3s and update any job row that's still running/queued.
+async function pollJobs() {
+  const rows = document.querySelectorAll("tr[id^='job-row-']");
+  for (const row of rows) {
+    const id = row.id.replace('job-row-', '');
+    const statusBadge = row.querySelector("[data-field='status']");
+    if (!statusBadge || (statusBadge.textContent !== 'running' && statusBadge.textContent !== 'queued')) continue;
+    try {
+      const res = await fetch('/api/scrape/status/' + id);
+      if (!res.ok) continue;
+      const job = await res.json();
+      statusBadge.textContent = job.status;
+      statusBadge.className = 'badge ' + (job.status === 'done' ? 'bg-success' : (job.status === 'error' ? 'bg-danger' : 'bg-warning text-dark'));
+      row.querySelector("[data-field='sites_checked']").textContent = job.sites_checked;
+      row.querySelector("[data-field='emails_found']").textContent = job.emails_found;
+      row.querySelector("[data-field='emails_inserted']").textContent = job.emails_inserted;
+      const logEl = document.querySelector('#job-log-' + id + " [data-field='log']");
+      if (logEl) logEl.textContent = job.log;
+    } catch (e) { /* ignore transient errors */ }
+  }
+}
+setInterval(pollJobs, 3000);
+</script>
+{% endblock %}

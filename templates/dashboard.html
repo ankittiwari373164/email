@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Overview</h3>
+<div class="row g-3 mb-4">
+  <div class="col-md-2">
+    <div class="card text-center p-3"><h2>{{ stats.total }}</h2><div>Total Leads</div></div>
+  </div>
+  {% for status in ['new', 'contacted', 'replied', 'bounced', 'unsubscribed'] %}
+  <div class="col-md-2">
+    <div class="card text-center p-3">
+      <h2>{{ stats.by_status.get(status, 0) }}</h2>
+      <div class="text-capitalize">{{ status }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<h4>Gmail Accounts</h4>
+<table class="table table-sm table-bordered bg-white">
+  <thead><tr><th>Email</th><th>Status</th><th>Sent Today</th><th>Daily Limit</th><th>Last Error</th></tr></thead>
+  <tbody>
+    {% for a in accounts %}
+    <tr>
+      <td>{{ a.email }}</td>
+      <td><span class="badge {{ 'bg-success' if a.status=='active' else 'bg-danger' }}">{{ a.status }}</span></td>
+      <td>{{ a.sent_today }}</td>
+      <td>{{ a.daily_limit }}</td>
+      <td class="text-danger small">{{ a.last_error or '' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No Gmail accounts connected yet. Go to <a href="/accounts">Gmail Accounts</a> to connect the first of your 5.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

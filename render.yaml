@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: outreach-dashboard
+    env: python
+    plan: starter   # free plan sleeps after inactivity — see DEPLOY.md re: UptimeRobot
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --workers 1 --threads 8 --timeout 120"
+    envVars:
+      - key: DATABASE_URL
+        sync: false        # paste your Supabase connection string in the Render dashboard
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: PUBLIC_BASE_URL
+        sync: false         # set to https://outreach-dashboard.onrender.com after first deploy
+      - key: OAUTH_REDIRECT_URI
+        sync: false         # set to https://outreach-dashboard.onrender.com/oauth2callback
+      - key: AUTO_AUTOMATION
+        value: "true"
+      - key: COMPANY_NAME
+        sync: false
+      - key: COMPANY_ADDRESS
+        sync: false

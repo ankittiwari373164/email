@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Outreach Dashboard</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+</head>
+<body>
+  <nav class="navbar navbar-expand navbar-dark bg-dark px-3">
+    <a class="navbar-brand" href="/">Outreach Dashboard</a>
+    <div class="navbar-nav">
+      <a class="nav-link" href="/">Overview</a>
+      <a class="nav-link" href="/scrape">Scrape</a>
+      <a class="nav-link" href="/leads">Leads</a>
+      <a class="nav-link" href="/campaigns">Campaigns</a>
+      <a class="nav-link" href="/replies">Replies</a>
+      <a class="nav-link" href="/accounts">Gmail Accounts</a>
+    </div>
+  </nav>
+  <div class="container-fluid mt-4">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for m in messages %}
+          <div class="alert alert-info">{{ m }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

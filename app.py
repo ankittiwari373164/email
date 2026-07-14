@@ -1,0 +1,332 @@
+import os
+import threading
+from dotenv import load_dotenv
+
+load_dotenv()  # loads .env in this folder if present (local dev only —
+                # Render/Vercel set real env vars, .env is gitignored)
+
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
+
+import config
+import db
+import gmail_client
+import sender
+import reply_tracker
+import scheduler
+import scraper
+import verify
+
+app = Flask(__name__)
+app.secret_key = config.FLASK_SECRET_KEY
+
+# Allow OAuth over http:// for local dev only. In production PUBLIC_BASE_URL
+# should be https:// (Render gives you this for free) so this env var
+# simply won't matter there.
+os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+
+_db_ready = False
+
+
+@app.before_request
+def _ensure_db():
+    global _db_ready
+    if not _db_ready:
+        db.init_db()
+        _db_ready = True
+
+
+# ---------------- Dashboard pages ----------------
+
+@app.route("/")
+def dashboard():
+    return render_template("dashboard.html", stats=db.stats(), accounts=db.list_accounts())
+
+
+@app.route("/health")
+def health():
+    """Plain-text 200 OK for uptime monitors (UptimeRobot etc). Also
+    touches the DB so a broken DATABASE_URL shows up as a failed check
+    instead of silently serving 200s."""
+    try:
+        db.stats()
+        return "ok", 200
+    except Exception as e:
+        return f"db error: {e}", 503
+
+
+@app.route("/leads")
+def leads_page():
+    status = request.args.get("status") or None
+    category = request.args.get("category") or None
+    city = request.args.get("city") or None
+    verify_status = request.args.get("verify_status") or None
+    leads = db.list_leads(status=status, category=category, city=city,
+                           verify_status=verify_status, limit=500)
+    return render_template("leads.html", leads=leads, status=status,
+                            category=category, city=city, verify_status=verify_status)
+
+
+@app.route("/accounts")
+def accounts_page():
+    return render_template("accounts.html", accounts=db.list_accounts())
+
+
+@app.route("/accounts/<int:account_id>/reactivate", methods=["POST"])
+def accounts_reactivate(account_id):
+    """Manually flip an 'error' account back to 'active' after you've fixed
+    whatever the last_error said (or if it was tripped by the old bug where
+    a single bad recipient took the whole account offline)."""
+    db.set_account_status(account_id, "active", error=None)
+    flash("Account reactivated.")
+    return redirect(url_for("accounts_page"))
+
+
+@app.route("/campaigns")
+def campaigns_page():
+    return render_template("campaigns.html", campaigns=db.list_campaigns())
+
+
+@app.route("/campaigns/<int:campaign_id>/edit")
+def campaign_edit_page(campaign_id):
+    campaign = db.get_campaign(campaign_id)
+    if not campaign:
+        flash("Campaign not found.")
+        return redirect(url_for("campaigns_page"))
+    return render_template("campaign_edit.html", campaign=campaign)
+
+
+@app.route("/replies")
+def replies_page():
+    replies = db.list_replies()
+    return render_template("replies.html", replies=replies)
+
+
+@app.route("/thread/<thread_id>")
+def thread_page(thread_id):
+    messages = db.thread_messages(thread_id)
+    lead = db.lead_by_thread(thread_id)
+    for m in messages:
+        if m["direction"] == "received":
+            db.mark_message_read(m["id"])
+    return render_template("thread.html", messages=messages, lead=lead)
+
+
+# ---------------- Scraping (category -> leads) ----------------
+
+@app.route("/scrape")
+def scrape_page():
+    return render_template(
+        "scrape.html",
+        jobs=db.list_scrape_jobs(),
+        categories=db.distinct_categories(),
+    )
+
+
+@app.route("/scrape/start", methods=["POST"])
+def scrape_start():
+    category = request.form["category"].strip()
+    city = (request.form.get("city") or "").strip() or None
+    keywords = (request.form.get("keywords") or "").strip() or None
+    max_results = int(request.form.get("max_results") or 20)
+    max_results = max(1, min(max_results, 100))
+
+    if not category:
+        flash("Category is required.")
+        return redirect(url_for("scrape_page"))
+
+    job_id = db.create_scrape_job(category, city, keywords, max_results)
+
+    thread = threading.Thread(
+        target=scraper.run_scrape_job,
+        args=(job_id, category, city, keywords, max_results),
+        daemon=True,
+    )
+    thread.start()
+
+    flash(f"Scrape started for '{category}'" + (f" in {city}" if city else "") + ". Watch progress below.")
+    return redirect(url_for("scrape_page"))
+
+
+@app.route("/api/scrape/status/<int:job_id>")
+def api_scrape_status(job_id):
+    job = db.get_scrape_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(job)
+
+
+@app.route("/api/scrape/jobs")
+def api_scrape_jobs():
+    return jsonify(db.list_scrape_jobs())
+
+
+# ---------------- Gmail OAuth: connect Gmail accounts ----------------
+
+@app.route("/accounts/connect")
+def accounts_connect():
+    if not os.path.exists(config.CLIENT_SECRET_FILE):
+        flash("Missing credentials/client_secret.json — download it from Google Cloud Console first. See README.")
+        return redirect(url_for("accounts_page"))
+    auth_url, state = gmail_client.get_authorization_url()
+    session["oauth_state"] = state
+    return redirect(auth_url)
+
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    state = session.get("oauth_state")
+    creds = gmail_client.exchange_code_for_token(state, request.url)
+    email = gmail_client.get_profile_email(creds)
+    token_json = gmail_client.save_credentials(creds, email)
+    db.add_or_update_account(email, email.split("@")[0], token_json)
+    flash(f"Connected {email}")
+    return redirect(url_for("accounts_page"))
+
+
+# ---------------- Campaigns ----------------
+
+@app.route("/campaigns/new", methods=["POST"])
+def campaigns_new():
+    db.create_campaign(
+        name=request.form["name"],
+        subject_template=request.form["subject_template"],
+        body_template=request.form["body_template"],
+        category_filter=request.form.get("category_filter") or None,
+        city_filter=request.form.get("city_filter") or None,
+    )
+    return redirect(url_for("campaigns_page"))
+
+
+@app.route("/campaigns/<int:campaign_id>/edit", methods=["POST"])
+def campaigns_update(campaign_id):
+    db.update_campaign(
+        campaign_id,
+        name=request.form["name"],
+        subject_template=request.form["subject_template"],
+        body_template=request.form["body_template"],
+        category_filter=request.form.get("category_filter") or None,
+        city_filter=request.form.get("city_filter") or None,
+    )
+    flash("Campaign updated.")
+    return redirect(url_for("campaigns_page"))
+
+
+@app.route("/campaigns/<int:campaign_id>/delete", methods=["POST"])
+def campaigns_delete(campaign_id):
+    db.delete_campaign(campaign_id)
+    flash("Campaign deleted.")
+    return redirect(url_for("campaigns_page"))
+
+
+@app.route("/api/campaigns/<int:campaign_id>/status", methods=["POST"])
+def api_campaign_set_status(campaign_id):
+    """Toggle draft/running/paused — 'running' is what the full-automation
+    scheduler picks up, so this is effectively the on/off switch for
+    hands-free sending on this campaign."""
+    status = request.json.get("status") if request.is_json else request.form.get("status")
+    if status not in ("draft", "running", "paused", "done"):
+        return jsonify({"error": "invalid status"}), 400
+    db.set_campaign_status(campaign_id, status)
+    return jsonify({"status": status})
+
+
+@app.route("/api/campaigns/<int:campaign_id>/send", methods=["POST"])
+def api_campaign_send(campaign_id):
+    max_sends = request.json.get("max_sends", 50) if request.is_json else 50
+    sent = sender.run_campaign(campaign_id, max_sends=max_sends)
+    return jsonify({"sent": sent})
+
+
+# ---------------- Leads: delete + verify ----------------
+
+@app.route("/leads/<int:lead_id>/delete", methods=["POST"])
+def lead_delete(lead_id):
+    db.delete_lead(lead_id)
+    flash("Lead deleted.")
+    return redirect(request.referrer or url_for("leads_page"))
+
+
+@app.route("/leads/bulk-delete", methods=["POST"])
+def leads_bulk_delete():
+    ids = request.form.getlist("lead_ids")
+    ids = [int(i) for i in ids if i.isdigit()]
+    count = db.delete_leads(ids)
+    flash(f"Deleted {count} lead(s).")
+    return redirect(request.referrer or url_for("leads_page"))
+
+
+@app.route("/leads/delete-filtered", methods=["POST"])
+def leads_delete_filtered():
+    """Delete every lead matching the current status/category/city filter
+    (e.g. clear out every 'bounced' lead in one click)."""
+    status = request.form.get("status") or None
+    category = request.form.get("category") or None
+    city = request.form.get("city") or None
+    count = db.delete_leads_by_filter(status=status, category=category, city=city)
+    flash(f"Deleted {count} lead(s) matching that filter.")
+    return redirect(url_for("leads_page"))
+
+
+@app.route("/api/leads/<int:lead_id>/verify", methods=["POST"])
+def api_lead_verify(lead_id):
+    lead = db.get_lead(lead_id)
+    if not lead:
+        return jsonify({"error": "not found"}), 404
+    result = verify.verify_email(lead["email"])
+    db.set_lead_verification(lead_id, result["status"], result["reason"], result["mx_valid"])
+    return jsonify(result)
+
+
+@app.route("/api/leads/verify-unverified", methods=["POST"])
+def api_leads_verify_unverified():
+    """Verify every lead that hasn't been checked yet. Runs inline (not a
+    background job) — for large lists call this repeatedly with a small
+    limit, or trigger it from the Scrape job flow instead."""
+    limit = int(request.json.get("limit", 100)) if request.is_json else 100
+    leads = db.list_leads(verify_status="unverified", limit=limit)
+    results = []
+    for lead in leads:
+        r = verify.verify_email(lead["email"])
+        db.set_lead_verification(lead["id"], r["status"], r["reason"], r["mx_valid"])
+        results.append({"id": lead["id"], "email": lead["email"], **r})
+    return jsonify({"checked": len(results), "results": results})
+
+
+# ---------------- Replies ----------------
+
+@app.route("/api/replies/check-now", methods=["POST"])
+def api_check_replies():
+    new_count = reply_tracker.poll_all_accounts()
+    return jsonify({"new_replies": new_count})
+
+
+# ---------------- Unsubscribe (public, no login) ----------------
+
+@app.route("/unsubscribe/<int:lead_id>")
+def unsubscribe(lead_id):
+    db.mark_lead_unsubscribed(lead_id)
+    return "You've been unsubscribed and won't receive further emails from us.", 200
+
+
+# ---------------- Stats API (dashboard auto-refresh) ----------------
+
+@app.route("/api/stats")
+def api_stats():
+    return jsonify(db.stats())
+
+
+# Start the background scheduler (reply polling + optional auto-send) once,
+# whether run via `python app.py` locally or imported by gunicorn in prod.
+#
+# IMPORTANT: this process must run as exactly ONE worker (see Procfile:
+# `gunicorn app:app --workers 1 --threads 8`). Each gunicorn *worker* is a
+# separate process with its own copy of this module, so N workers would
+# start N independent schedulers — each polling replies and auto-sending
+# on its own, which risks the same lead getting emailed twice in a race.
+# Threads are fine (they share this one process/scheduler); workers are not.
+db.init_db()
+_db_ready = True
+scheduler.start()
+
+if __name__ == "__main__":
+    app.run(debug=True, port=int(os.environ.get("PORT", 5000)))
