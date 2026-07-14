@@ -18,7 +18,10 @@ if not DATABASE_URL:
     )
 
 # ---------------- Gmail OAuth ----------------
-CLIENT_SECRET_FILE = os.path.join(BASE_DIR, "credentials", "client_secret.json")
+CLIENT_SECRET_FILE = os.environ.get(
+    "CLIENT_SECRET_FILE_PATH",
+    os.path.join(BASE_DIR, "client_secret.json")
+)
 TOKENS_DIR = os.path.join(BASE_DIR, "tokens")
 
 GMAIL_SCOPES = [
