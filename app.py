@@ -380,6 +380,24 @@ def api_check_replies_status():
 
 @app.route("/unsubscribe/<int:lead_id>")
 def unsubscribe(lead_id):
+    """GET only shows a confirmation page — it does NOT unsubscribe.
+    This matters: corporate email security scanners (Outlook Safe Links,
+    Gmail's link-safety prefetcher, various proxies) automatically visit
+    every link in an email before the recipient ever opens it. If GET
+    unsubscribed directly, those scanners would silently unsubscribe
+    leads who never saw the email — which is very likely what's been
+    happening (see the Bounced/Unsubscribed counts on Overview). Only the
+    POST from the button below actually unsubscribes."""
+    lead = db.get_lead(lead_id)
+    if not lead:
+        return "This link isn't valid.", 404
+    if lead.get("unsubscribed"):
+        return "You're already unsubscribed — no further emails will be sent.", 200
+    return render_template("unsubscribe_confirm.html", lead=lead)
+
+
+@app.route("/unsubscribe/<int:lead_id>/confirm", methods=["POST"])
+def unsubscribe_confirm(lead_id):
     db.mark_lead_unsubscribed(lead_id)
     return "You've been unsubscribed and won't receive further emails from us.", 200
 

@@ -56,18 +56,7 @@ AUTO_AUTOMATION_ENABLED = os.environ.get("AUTO_AUTOMATION", "true").lower() != "
 
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production")
 
-EMAIL_FOOTER_TEMPLATE = """
 
---
-{sender_name}
-{company_name}
-{company_address}
-
-Don't want these emails? Unsubscribe: {unsubscribe_link}
-"""
-
-COMPANY_NAME = os.environ.get("COMPANY_NAME", "Your Company Name")
-COMPANY_ADDRESS = os.environ.get("COMPANY_ADDRESS", "Your Company Address, City, India")
 
 # ---------------- Lead discovery (Scrape page) ----------------
 # DuckDuckGo/Bing HTML scraping got unreliable (both now return 403 to
