@@ -155,6 +155,7 @@ def init_db():
         cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_mime TEXT")
         cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_base64 TEXT")
         cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_placement TEXT DEFAULT 'attachment'")
+        cur.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_error TEXT")
 
 
 # ---------- accounts ----------
@@ -301,6 +302,14 @@ def mark_lead_status(lead_id, status):
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE leads SET status=%s WHERE id=%s", (status, lead_id))
+
+
+def mark_lead_bounced(lead_id, reason):
+    """Like mark_lead_status(lead_id, 'bounced') but also records WHY, so
+    a bounce is diagnosable later instead of a silent black box."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE leads SET status='bounced', last_error=%s WHERE id=%s", (reason, lead_id))
 
 
 def mark_lead_unsubscribed(lead_id):

@@ -128,15 +128,18 @@ def run_campaign(campaign_id, max_sends=None):
             sent_count += 1
         except Exception as e:
             err = str(e)
+            # Log to stdout (shows up in Render logs) — this was silently
+            # swallowed before, which is why the last batch of "bounces"
+            # had no visible cause anywhere.
+            print(f"[sender] Send failed for lead {lead['id']} ({lead['email']}) "
+                  f"via account {account['email']}: {err}", flush=True)
+
             if _is_account_level_error(err):
                 db.set_account_error(account["id"], err)
                 failed_account_ids.add(account["id"])
                 # leave the lead as 'new' so it's retried on a different account
             else:
-                # a per-recipient problem — don't touch the account, just
-                # flag this one lead and move on so the rest of the batch
-                # still goes out.
-                db.mark_lead_status(lead["id"], "bounced")
+                db.mark_lead_bounced(lead["id"], err)
             continue
 
         time.sleep(config.SEND_PACING_SECONDS)

@@ -47,7 +47,7 @@
       <td>{{ l.business_name or '' }}</td>
       <td>{{ l.category or '' }}</td>
       <td>{{ l.city or '' }}</td>
-      <td><span class="badge bg-secondary">{{ l.status }}</span></td>
+      <td><span class="badge bg-secondary" title="{{ l.last_error or '' }}">{{ l.status }}</span></td>
       <td>
         <span class="badge {{ 'bg-success' if l.verify_status=='valid' else ('bg-danger' if l.verify_status=='invalid' else ('bg-warning text-dark' if l.verify_status=='risky' else 'bg-light text-dark')) }}"
               id="verify-badge-{{ l.id }}" title="{{ l.verify_reason or '' }}">{{ l.verify_status or 'unverified' }}</span>
