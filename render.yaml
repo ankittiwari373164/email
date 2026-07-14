@@ -4,7 +4,7 @@ services:
     env: python
     plan: starter   # free plan sleeps after inactivity — see DEPLOY.md re: UptimeRobot
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app --workers 1 --threads 8 --timeout 120"
+    startCommand: "gunicorn app:app --workers 1 --worker-class gthread --threads 8 --timeout 120"
     envVars:
       - key: DATABASE_URL
         sync: false        # paste your Supabase connection string in the Render dashboard

@@ -24,10 +24,27 @@
 
 <script>
 document.getElementById('check-now').addEventListener('click', async () => {
+  const btn = document.getElementById('check-now');
+  btn.disabled = true;
   const res = await fetch('/api/replies/check-now', {method: 'POST'});
   const data = await res.json();
-  document.getElementById('check-result').textContent = `Found ${data.new_replies} new replies. Reloading...`;
-  setTimeout(() => location.reload(), 1200);
+  if (data.already_running) {
+    document.getElementById('check-result').textContent = 'Already checking — hang tight.';
+  } else {
+    document.getElementById('check-result').textContent = 'Checking inboxes in the background...';
+  }
+  const poll = setInterval(async () => {
+    const s = await fetch('/api/replies/check-status');
+    const sd = await s.json();
+    if (!sd.running) {
+      clearInterval(poll);
+      const found = sd.last_result;
+      document.getElementById('check-result').textContent =
+        found === null ? 'Done.' : `Found ${found} new replies. Reloading...`;
+      btn.disabled = false;
+      setTimeout(() => location.reload(), 1200);
+    }
+  }, 2000);
 });
 </script>
 {% endblock %}

@@ -68,15 +68,33 @@ document.querySelectorAll('.send-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const id = btn.dataset.id;
     btn.disabled = true;
-    btn.textContent = 'Sending...';
+    btn.textContent = 'Starting...';
     const res = await fetch(`/api/campaigns/${id}/send`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({max_sends: 50})
     });
     const data = await res.json();
-    document.getElementById(`result-${id}`).textContent = `Sent ${data.sent}`;
-    btn.disabled = false;
-    btn.textContent = 'Send 50';
+    if (data.already_running) {
+      document.getElementById(`result-${id}`).textContent = 'Already sending — check back in a bit';
+      btn.disabled = false;
+      btn.textContent = 'Send 50';
+      return;
+    }
+    document.getElementById(`result-${id}`).textContent = `Sending in the background (up to ${data.max_sends})...`;
+    btn.textContent = 'Sending...';
+    // Poll until done — sending is paced (SEND_PACING_SECONDS apart) so a
+    // batch of 50 can take several minutes; this just reflects status,
+    // it doesn't block anything.
+    const poll = setInterval(async () => {
+      const s = await fetch(`/api/campaigns/${id}/send-status`);
+      const sd = await s.json();
+      if (!sd.running) {
+        clearInterval(poll);
+        document.getElementById(`result-${id}`).textContent = 'Done — check Overview/Leads for updated counts';
+        btn.disabled = false;
+        btn.textContent = 'Send 50';
+      }
+    }, 5000);
   });
 });
 

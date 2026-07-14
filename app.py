@@ -263,11 +263,35 @@ def api_campaign_set_status(campaign_id):
     return jsonify({"status": status})
 
 
+_send_in_progress = set()  # campaign_ids currently sending, so double-clicks don't stack
+
+
 @app.route("/api/campaigns/<int:campaign_id>/send", methods=["POST"])
 def api_campaign_send(campaign_id):
+    """Runs in a background thread — sending 50 emails at
+    SEND_PACING_SECONDS apart easily takes several minutes, far longer
+    than gunicorn's request timeout, so this must NOT block the request
+    or the worker gets killed mid-batch (which is what was happening
+    before this fix)."""
+    if campaign_id in _send_in_progress:
+        return jsonify({"already_running": True})
+
     max_sends = request.json.get("max_sends", 50) if request.is_json else 50
-    sent = sender.run_campaign(campaign_id, max_sends=max_sends)
-    return jsonify({"sent": sent})
+
+    def _run():
+        _send_in_progress.add(campaign_id)
+        try:
+            sender.run_campaign(campaign_id, max_sends=max_sends)
+        finally:
+            _send_in_progress.discard(campaign_id)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"started": True, "max_sends": max_sends})
+
+
+@app.route("/api/campaigns/<int:campaign_id>/send-status")
+def api_campaign_send_status(campaign_id):
+    return jsonify({"running": campaign_id in _send_in_progress})
 
 
 # ---------------- Leads: delete + verify ----------------
@@ -327,10 +351,29 @@ def api_leads_verify_unverified():
 
 # ---------------- Replies ----------------
 
+_reply_check_in_progress = {"running": False, "last_result": None}
+
+
 @app.route("/api/replies/check-now", methods=["POST"])
 def api_check_replies():
-    new_count = reply_tracker.poll_all_accounts()
-    return jsonify({"new_replies": new_count})
+    if _reply_check_in_progress["running"]:
+        return jsonify({"already_running": True})
+
+    def _run():
+        _reply_check_in_progress["running"] = True
+        try:
+            n = reply_tracker.poll_all_accounts()
+            _reply_check_in_progress["last_result"] = n
+        finally:
+            _reply_check_in_progress["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/replies/check-status")
+def api_check_replies_status():
+    return jsonify(_reply_check_in_progress)
 
 
 # ---------------- Unsubscribe (public, no login) ----------------
