@@ -57,8 +57,17 @@ def send_one(lead, account, campaign, sender_name=None):
     )
     full_body = body + footer
 
+    image_bytes = None
+    if campaign.get("image_base64"):
+        import base64
+        image_bytes = base64.b64decode(campaign["image_base64"])
+
     message_id, thread_id = gmail_client.send_email(
-        account, lead["email"], subject, full_body
+        account, lead["email"], subject, full_body,
+        image_bytes=image_bytes,
+        image_filename=campaign.get("image_filename"),
+        image_mime=campaign.get("image_mime"),
+        image_placement=campaign.get("image_placement") or "attachment",
     )
 
     db.log_message(

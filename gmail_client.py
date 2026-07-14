@@ -80,13 +80,30 @@ def get_profile_email(creds):
 
 
 def send_email(account, to_addr, subject, body_text, thread_id=None,
-                in_reply_to=None, references=None):
-    """Send a plain-text email via Gmail API. Returns (message_id, thread_id)."""
+                in_reply_to=None, references=None,
+                image_bytes=None, image_filename=None, image_mime=None, image_placement="attachment"):
+    """Send an email via Gmail API. Returns (message_id, thread_id).
+
+    If image_bytes is given:
+      - image_placement='inline'     -> shown in the email body itself
+        (HTML email, <img src="cid:...">, with a plain-text part too so
+        clients that block HTML images still show the text).
+      - image_placement='attachment' (default) -> plain-text email with
+        the image as a regular file attachment.
+    """
     service = get_service(account)
 
-    mime_msg = MIMEText(body_text)
-    mime_msg["to"] = to_addr
-    mime_msg["subject"] = subject
+    if image_bytes and image_placement == "inline":
+        mime_msg = _build_inline_image_message(to_addr, subject, body_text,
+                                                image_bytes, image_filename, image_mime)
+    elif image_bytes:
+        mime_msg = _build_attachment_message(to_addr, subject, body_text,
+                                              image_bytes, image_filename, image_mime)
+    else:
+        mime_msg = MIMEText(body_text)
+        mime_msg["to"] = to_addr
+        mime_msg["subject"] = subject
+
     if in_reply_to:
         mime_msg["In-Reply-To"] = in_reply_to
         mime_msg["References"] = references or in_reply_to
@@ -98,6 +115,54 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
 
     sent = service.users().messages().send(userId="me", body=body).execute()
     return sent["id"], sent.get("threadId")
+
+
+def _text_to_html(text):
+    import html as _html
+    escaped = _html.escape(text)
+    return "<div style='white-space:pre-wrap;font-family:sans-serif'>" + escaped.replace("\n", "<br>") + "</div>"
+
+
+def _build_inline_image_message(to_addr, subject, body_text, image_bytes, image_filename, image_mime):
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.image import MIMEImage
+
+    msg = MIMEMultipart("related")
+    msg["to"] = to_addr
+    msg["subject"] = subject
+
+    alt = MIMEMultipart("alternative")
+    msg.attach(alt)
+
+    alt.attach(MIMEText(body_text, "plain"))
+
+    html_body = _text_to_html(body_text) + '<br><img src="cid:campaign_image" style="max-width:100%">'
+    alt.attach(MIMEText(html_body, "html"))
+
+    subtype = (image_mime or "image/png").split("/")[-1]
+    img_part = MIMEImage(image_bytes, _subtype=subtype)
+    img_part.add_header("Content-ID", "<campaign_image>")
+    img_part.add_header("Content-Disposition", "inline", filename=image_filename or "image")
+    msg.attach(img_part)
+
+    return msg
+
+
+def _build_attachment_message(to_addr, subject, body_text, image_bytes, image_filename, image_mime):
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.image import MIMEImage
+
+    msg = MIMEMultipart("mixed")
+    msg["to"] = to_addr
+    msg["subject"] = subject
+    msg.attach(MIMEText(body_text, "plain"))
+
+    subtype = (image_mime or "image/png").split("/")[-1]
+    img_part = MIMEImage(image_bytes, _subtype=subtype)
+    img_part.add_header("Content-Disposition", "attachment", filename=image_filename or "image.png")
+    msg.attach(img_part)
+
+    return msg
 
 
 def list_recent_message_ids(account, query="in:inbox newer_than:7d", max_results=50):

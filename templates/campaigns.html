@@ -4,12 +4,23 @@
 
 <div class="card p-3 mb-4">
   <h5>New Campaign</h5>
-  <form method="post" action="/campaigns/new" class="row g-2">
+  <form method="post" action="/campaigns/new" class="row g-2" enctype="multipart/form-data">
     <div class="col-md-4"><input class="form-control" name="name" placeholder="Campaign name" required></div>
     <div class="col-md-4"><input class="form-control" name="category_filter" placeholder="Category filter (optional, e.g. digital marketing agency)"></div>
     <div class="col-md-4"><input class="form-control" name="city_filter" placeholder="City filter (optional, e.g. Delhi)"></div>
     <div class="col-12"><input class="form-control" name="subject_template" placeholder="Subject — use {business_name}, {city}, {category}" required></div>
     <div class="col-12"><textarea class="form-control" name="body_template" rows="6" placeholder="Body — use {business_name}, {city}, {category}, {email}" required></textarea></div>
+    <div class="col-md-6">
+      <label class="form-label small text-muted">Image (optional, 5MB max)</label>
+      <input class="form-control" type="file" name="image" accept="image/*">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label small text-muted">How should it appear?</label>
+      <select class="form-select" name="image_placement">
+        <option value="attachment">Attached file (email stays plain text)</option>
+        <option value="inline">Shown inside the email body</option>
+      </select>
+    </div>
     <div class="col-12"><button class="btn btn-primary">Create Campaign</button></div>
   </form>
 </div>
@@ -26,7 +37,7 @@
   <tbody>
   {% for c in campaigns %}
     <tr>
-      <td>{{ c.name }}</td>
+      <td>{{ c.name }}{% if c.image_filename %} <span class="badge bg-info text-dark" title="{{ c.image_filename }} ({{ c.image_placement }})">📎 image</span>{% endif %}</td>
       <td>{{ c.subject_template }}</td>
       <td>{{ c.category_filter or 'any' }}</td>
       <td>{{ c.city_filter or 'any' }}</td>

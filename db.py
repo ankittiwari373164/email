@@ -88,6 +88,11 @@ def init_db():
                 category_filter TEXT,
                 city_filter TEXT,
                 status TEXT DEFAULT 'draft',
+                image_filename TEXT,
+                image_mime TEXT,
+                image_base64 TEXT,          -- stored in Supabase, not a local
+                                            -- file, so it survives redeploys
+                image_placement TEXT DEFAULT 'attachment',  -- 'inline' or 'attachment'
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
             )
@@ -141,6 +146,15 @@ def init_db():
                 finished_at TIMESTAMP
             )
         """)
+
+        # Safe migrations for tables that may already exist from an earlier
+        # version of this app (CREATE TABLE IF NOT EXISTS above only helps
+        # for brand-new tables — these ADD COLUMN IF NOT EXISTS calls patch
+        # existing ones in place, no manual DROP TABLE needed going forward).
+        cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_filename TEXT")
+        cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_mime TEXT")
+        cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_base64 TEXT")
+        cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_placement TEXT DEFAULT 'attachment'")
 
 
 # ---------- accounts ----------
@@ -409,25 +423,49 @@ def list_scrape_jobs(limit=20):
 
 # ---------- campaigns ----------
 
-def create_campaign(name, subject_template, body_template, category_filter, city_filter):
+def create_campaign(name, subject_template, body_template, category_filter, city_filter,
+                     image_filename=None, image_mime=None, image_base64=None, image_placement="attachment"):
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO campaigns (name, subject_template, body_template, category_filter, city_filter, status, created_at)
-            VALUES (%s, %s, %s, %s, %s, 'draft', %s) RETURNING id
-        """, (name, subject_template, body_template, category_filter, city_filter, datetime.utcnow()))
+            INSERT INTO campaigns (name, subject_template, body_template, category_filter, city_filter,
+                image_filename, image_mime, image_base64, image_placement, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s) RETURNING id
+        """, (name, subject_template, body_template, category_filter, city_filter,
+              image_filename, image_mime, image_base64, image_placement, datetime.utcnow()))
         return cur.fetchone()["id"]
 
 
-def update_campaign(campaign_id, name, subject_template, body_template, category_filter, city_filter):
+def update_campaign(campaign_id, name, subject_template, body_template, category_filter, city_filter,
+                     image_filename=None, image_mime=None, image_base64=None, image_placement=None,
+                     remove_image=False):
+    """image_* left as None means 'don't touch the existing image'; pass
+    remove_image=True to explicitly clear it instead."""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("""
-            UPDATE campaigns SET name=%s, subject_template=%s, body_template=%s,
-                category_filter=%s, city_filter=%s, updated_at=%s
-            WHERE id=%s
-        """, (name, subject_template, body_template, category_filter, city_filter,
-              datetime.utcnow(), campaign_id))
+        if remove_image:
+            cur.execute("""
+                UPDATE campaigns SET name=%s, subject_template=%s, body_template=%s,
+                    category_filter=%s, city_filter=%s, updated_at=%s,
+                    image_filename=NULL, image_mime=NULL, image_base64=NULL, image_placement='attachment'
+                WHERE id=%s
+            """, (name, subject_template, body_template, category_filter, city_filter,
+                  datetime.utcnow(), campaign_id))
+        elif image_base64 is not None:
+            cur.execute("""
+                UPDATE campaigns SET name=%s, subject_template=%s, body_template=%s,
+                    category_filter=%s, city_filter=%s, updated_at=%s,
+                    image_filename=%s, image_mime=%s, image_base64=%s, image_placement=%s
+                WHERE id=%s
+            """, (name, subject_template, body_template, category_filter, city_filter,
+                  datetime.utcnow(), image_filename, image_mime, image_base64, image_placement, campaign_id))
+        else:
+            cur.execute("""
+                UPDATE campaigns SET name=%s, subject_template=%s, body_template=%s,
+                    category_filter=%s, city_filter=%s, updated_at=%s
+                WHERE id=%s
+            """, (name, subject_template, body_template, category_filter, city_filter,
+                  datetime.utcnow(), campaign_id))
 
 
 def list_campaigns():

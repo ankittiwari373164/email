@@ -185,20 +185,48 @@ def oauth2callback():
 
 # ---------------- Campaigns ----------------
 
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5MB — plenty for a logo/product shot,
+                                    # keeps Supabase rows and email size sane
+
+
+def _read_uploaded_image():
+    """Returns (filename, mime, base64_str) or (None, None, None) if no
+    file was uploaded / it's over the size limit (flashes a message)."""
+    file = request.files.get("image")
+    if not file or not file.filename:
+        return None, None, None
+    data = file.read()
+    if len(data) > MAX_IMAGE_BYTES:
+        flash(f"Image too large ({len(data)//1024}KB) — 5MB max. Image was not attached.")
+        return None, None, None
+    import base64 as _b64
+    return file.filename, (file.mimetype or "image/png"), _b64.b64encode(data).decode()
+
+
 @app.route("/campaigns/new", methods=["POST"])
 def campaigns_new():
+    image_filename, image_mime, image_base64 = _read_uploaded_image()
     db.create_campaign(
         name=request.form["name"],
         subject_template=request.form["subject_template"],
         body_template=request.form["body_template"],
         category_filter=request.form.get("category_filter") or None,
         city_filter=request.form.get("city_filter") or None,
+        image_filename=image_filename,
+        image_mime=image_mime,
+        image_base64=image_base64,
+        image_placement=request.form.get("image_placement") or "attachment",
     )
     return redirect(url_for("campaigns_page"))
 
 
 @app.route("/campaigns/<int:campaign_id>/edit", methods=["POST"])
 def campaigns_update(campaign_id):
+    remove_image = request.form.get("remove_image") == "on"
+    image_filename, image_mime, image_base64 = (None, None, None)
+    if not remove_image:
+        image_filename, image_mime, image_base64 = _read_uploaded_image()
+
     db.update_campaign(
         campaign_id,
         name=request.form["name"],
@@ -206,6 +234,11 @@ def campaigns_update(campaign_id):
         body_template=request.form["body_template"],
         category_filter=request.form.get("category_filter") or None,
         city_filter=request.form.get("city_filter") or None,
+        image_filename=image_filename,
+        image_mime=image_mime,
+        image_base64=image_base64,
+        image_placement=request.form.get("image_placement") or "attachment",
+        remove_image=remove_image,
     )
     flash("Campaign updated.")
     return redirect(url_for("campaigns_page"))

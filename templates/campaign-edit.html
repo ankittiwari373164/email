@@ -3,13 +3,39 @@
 <h3>Edit Campaign</h3>
 
 <div class="card p-3 mb-4">
-  <form method="post" action="/campaigns/{{ campaign.id }}/edit" class="row g-2">
+  <form method="post" action="/campaigns/{{ campaign.id }}/edit" class="row g-2" enctype="multipart/form-data">
     <div class="col-md-4"><input class="form-control" name="name" value="{{ campaign.name }}" required></div>
     <div class="col-md-4"><input class="form-control" name="category_filter" placeholder="Category filter (optional)" value="{{ campaign.category_filter or '' }}"></div>
     <div class="col-md-4"><input class="form-control" name="city_filter" placeholder="City filter (optional)" value="{{ campaign.city_filter or '' }}"></div>
     <div class="col-12"><input class="form-control" name="subject_template" value="{{ campaign.subject_template }}" required></div>
     <div class="col-12"><textarea class="form-control" name="body_template" rows="10" required>{{ campaign.body_template }}</textarea></div>
+
+    <div class="col-12"><hr></div>
+
+    {% if campaign.image_base64 %}
     <div class="col-12">
+      <label class="form-label small text-muted">Current image ({{ campaign.image_filename }}, {{ campaign.image_placement }})</label><br>
+      <img src="data:{{ campaign.image_mime }};base64,{{ campaign.image_base64 }}" style="max-height:120px;border:1px solid #ddd;border-radius:4px">
+      <div class="form-check mt-1">
+        <input class="form-check-input" type="checkbox" name="remove_image" id="remove_image">
+        <label class="form-check-label small" for="remove_image">Remove this image</label>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="col-md-6">
+      <label class="form-label small text-muted">{{ 'Replace image' if campaign.image_base64 else 'Image (optional, 5MB max)' }}</label>
+      <input class="form-control" type="file" name="image" accept="image/*">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label small text-muted">How should it appear?</label>
+      <select class="form-select" name="image_placement">
+        <option value="attachment" {{ 'selected' if campaign.image_placement=='attachment' else '' }}>Attached file (email stays plain text)</option>
+        <option value="inline" {{ 'selected' if campaign.image_placement=='inline' else '' }}>Shown inside the email body</option>
+      </select>
+    </div>
+
+    <div class="col-12 mt-2">
       <button class="btn btn-primary">Save Changes</button>
       <a class="btn btn-outline-secondary" href="/campaigns">Cancel</a>
     </div>

@@ -59,8 +59,16 @@ JUNK_DOMAINS = {
     "example.com", "sentry.io", "wixpress.com", "godaddy.com", "schema.org",
     "w3.org", "gmail.com.png", "yourdomain.com", "domain.com",
 }
+# Substrings anywhere in the domain — catches subdomains like
+# sentry.wixpress.com, o12345.ingest.sentry.io, etc that an exact-match
+# check on JUNK_DOMAINS misses.
+JUNK_DOMAIN_SUBSTRINGS = ("sentry", "wixpress", "wix.com", "sentry-cdn")
 JUNK_LOCALPARTS = {"info@example", "test", "noreply", "no-reply", "donotreply"}
 IMAGE_EXT_RE = re.compile(r"\.(png|jpe?g|gif|svg|webp)$", re.I)
+# Sentry/analytics/tracking IDs are typically a 24-40 char hex string as
+# the local-part (e.g. dd0a55ccb8124b9c9d938e3acf41f8aa@...) — never a
+# real person's contact address.
+HEX_HASH_LOCALPART_RE = re.compile(r"^[0-9a-f]{20,40}$", re.I)
 
 CONTACT_LINK_WORDS = ("contact", "about", "reach", "get-in-touch")
 
@@ -81,12 +89,16 @@ def _clean_emails(raw_text):
     found = set()
     for m in EMAIL_RE.findall(raw_text):
         email = m.strip().strip(".,;:").lower()
-        domain = email.split("@")[-1]
+        localpart, domain = email.split("@", 1)
         if domain in JUNK_DOMAINS:
+            continue
+        if any(sub in domain for sub in JUNK_DOMAIN_SUBSTRINGS):
             continue
         if IMAGE_EXT_RE.search(email):
             continue
         if any(email.startswith(p) for p in JUNK_LOCALPARTS):
+            continue
+        if HEX_HASH_LOCALPART_RE.match(localpart):
             continue
         found.add(email)
     return found
