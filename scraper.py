@@ -261,16 +261,178 @@ def search_bing(query, max_results=20, log_fn=None):
     return urls[:max_results]
 
 
-SEARCH_BACKENDS = [search_google_cse, search_duckduckgo, search_bing]
+def search_mojeek(query, max_results=20, log_fn=None):
+    """Independent search index, no API key, no card. Smaller index than
+    Google/Bing so results are thinner, but it's genuinely free and worth
+    trying when the bigger engines are blocking scripted requests."""
+    urls = []
+    try:
+        resp = requests.get(
+            "https://www.mojeek.com/search",
+            params={"q": query},
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if log_fn:
+            log_fn(f"    Mojeek '{query}' -> HTTP {resp.status_code}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        if log_fn:
+            log_fn(f"    Mojeek '{query}' -> FAILED: {e}")
+        return urls
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.select("a.title, h2.title a, li.result a.ob"):
+        href = a.get("href")
+        if href and href.startswith("http"):
+            urls.append(href)
+        if len(urls) >= max_results:
+            break
+
+    if log_fn:
+        log_fn(f"    -> {len(urls)} result(s)")
+    return urls[:max_results]
+
+
+def search_startpage(query, max_results=20, log_fn=None):
+    """Startpage proxies Google results, no API key/card needed for the
+    plain web UI. Best-effort like the others — logs its HTTP status so
+    failures are visible rather than silent."""
+    urls = []
+    try:
+        resp = requests.post(
+            "https://www.startpage.com/sp/search",
+            data={"query": query},
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if log_fn:
+            log_fn(f"    Startpage '{query}' -> HTTP {resp.status_code}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        if log_fn:
+            log_fn(f"    Startpage '{query}' -> FAILED: {e}")
+        return urls
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.select("a.w-gl__result-title, a.result-link"):
+        href = a.get("href")
+        if href and href.startswith("http"):
+            urls.append(href)
+        if len(urls) >= max_results:
+            break
+
+    if log_fn:
+        log_fn(f"    -> {len(urls)} result(s)")
+    return urls[:max_results]
+
+
+SEARCH_BACKENDS = [search_google_cse, search_duckduckgo, search_bing, search_mojeek, search_startpage]
+
+
+# Non-search-engine business links commonly found ON a directory listing
+# page that we don't want to treat as a "business website" (social/share
+# widgets, the directory's own asset domains, etc).
+DIRECTORY_LINK_JUNK = (
+    "facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com",
+    "youtube.com", "wa.me", "whatsapp.com", "play.google.com", "apps.apple.com",
+    "googleusercontent.com", "gstatic.com", "doubleclick.net", "google.com",
+)
+
+
+def _slugify_for_directory(text):
+    return re.sub(r"[^a-zA-Z0-9]+", "-", text.strip()).strip("-")
+
+
+def build_directory_listing_urls(category, city):
+    """Best-effort category+city listing URLs for each directory in
+    DIRECTORY_SITES. These follow each site's typical /City/Category-slug
+    pattern — directories do restructure their URLs occasionally, so this
+    is best-effort (logged, never fatal if a pattern's gone stale)."""
+    cat_slug = _slugify_for_directory(category)
+    city_slug = _slugify_for_directory(city) if city else ""
+
+    urls = []
+    if city_slug:
+        urls.append(f"https://www.justdial.com/{city_slug}/{cat_slug}")
+        urls.append(f"https://dir.indiamart.com/search.mp?ss={quote_plus(category + ' ' + city)}")
+        urls.append(f"https://www.sulekha.com/{cat_slug}/{city_slug}")
+    else:
+        urls.append(f"https://dir.indiamart.com/search.mp?ss={quote_plus(category)}")
+    return urls
+
+
+def harvest_directory_outbound_links(directory_url, max_results=15, log_fn=None):
+    """Fetch a directory listing page directly (no search engine involved
+    at all) and pull out links to businesses' OWN websites — directory
+    pages themselves are phone/WhatsApp-first and rarely show emails, but
+    they often link out to each listed business's real site, which our
+    normal emails_from_site() crawler is good at getting emails from."""
+    html = _fetch(directory_url)
+    if not html:
+        if log_fn:
+            log_fn(f"    Directory fetch failed or blocked: {directory_url}")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    directory_domain = urlparse(directory_url).netloc.replace("www.", "")
+    found = []
+    seen = set()
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href.startswith("http"):
+            continue
+        link_domain = urlparse(href).netloc.replace("www.", "")
+        if not link_domain or link_domain == directory_domain:
+            continue
+        if any(j in link_domain for j in DIRECTORY_LINK_JUNK):
+            continue
+        if link_domain in seen:
+            continue
+        seen.add(link_domain)
+        found.append(href)
+        if len(found) >= max_results:
+            break
+
+    if log_fn:
+        log_fn(f"    Directory {directory_domain}: harvested {len(found)} outbound business link(s)")
+    return found
 
 
 def collect_candidate_urls(category, city, keywords, max_results, log_fn=None):
-    """Try query variants across search backends until we have enough
-    URLs (or run out of variants). Returns a de-duped list of URLs, and
-    logs every attempt along the way so failures are visible."""
-    variants = build_query_variants(category, city, keywords)
+    """Try, in order: (1) direct directory-listing harvest -- no search
+    engine, no API, no rate limit, genuinely free forever -- then (2)
+    query variants across search backends for whatever's still needed.
+    Returns a de-duped list of URLs, logging every attempt along the way
+    so failures are visible."""
     collected = []
     seen_domains = set()
+
+    if log_fn:
+        log_fn("  Harvesting business links directly from directories (no search engine needed)...")
+    for directory_url in build_directory_listing_urls(category, city):
+        if len(collected) >= max_results:
+            break
+        try:
+            links = harvest_directory_outbound_links(
+                directory_url, max_results=max_results - len(collected), log_fn=log_fn
+            )
+        except Exception as e:
+            if log_fn:
+                log_fn(f"    Directory harvest raised {type(e).__name__}: {e}")
+            links = []
+        for url in links:
+            domain = urlparse(url).netloc
+            if domain and domain not in seen_domains:
+                seen_domains.add(domain)
+                collected.append(url)
+        time.sleep(PAGE_FETCH_DELAY)
+
+    if len(collected) >= max_results:
+        return collected[:max_results]
+
+    variants = build_query_variants(category, city, keywords)
 
     for query in variants:
         if len(collected) >= max_results:
@@ -298,7 +460,7 @@ def collect_candidate_urls(category, city, keywords, max_results, log_fn=None):
             time.sleep(SEARCH_DELAY)
 
             if new_count > 0:
-                # This backend worked for this query — no need to also hit
+                # This backend worked for this query -- no need to also hit
                 # the (likely-blocked) fallback engines for the same query,
                 # move on to the next query variant instead.
                 break
