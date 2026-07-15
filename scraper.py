@@ -160,107 +160,62 @@ SEARCH_BACKENDS = [search_startpage, search_bing, search_duckduckgo]
 # without Chrome, so this only catches server-rendered content).
 # ============================================================
 
-def find_linkedin_profiles(category, city, max_results=8, log_fn=None):
-    query = f"site:linkedin.com/in {category} {city or ''}".strip()
-    if log_fn:
-        log_fn(f"  Searching LinkedIn: {query}")
-    urls = []
-    for backend in SEARCH_BACKENDS:
-        results = backend(query, max_results=max_results, log_fn=log_fn)
-        for u in results:
-            if "linkedin.com/in/" in u and u not in urls:
-                urls.append(u)
-        if urls:
-            break
-        time.sleep(SEARCH_DELAY)
-    return urls[:max_results]
-
-
-def find_instagram_profiles(category, city, max_results=8, log_fn=None):
-    query = f"site:instagram.com {category} {city or ''}".strip()
-    if log_fn:
-        log_fn(f"  Searching Instagram: {query}")
-    urls = []
-    for backend in SEARCH_BACKENDS:
-        results = backend(query, max_results=max_results, log_fn=log_fn)
-        for u in results:
-            if "instagram.com/" in u and "/p/" not in u and u not in urls:
-                urls.append(u)
-        if urls:
-            break
-        time.sleep(SEARCH_DELAY)
-    return urls[:max_results]
-
-
-# ============================================================
-# DIRECT GOOGLE SNIPPET SEARCH — matches the exact query format
-# that shows emails right in the search results (verified in
-# your screenshots): site:www.X.com "@gmail.com" "category" city
-# Extracts emails from the snippet text itself, no page visit
-# needed since Google already surfaces them.
-# ============================================================
-
-GOOGLE_HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+PLATFORM_DOMAINS = {
+    "LinkedIn": "linkedin.com",
+    "Instagram": "instagram.com",
+    "JustDial": "justdial.com",
+    "Facebook": "facebook.com",
 }
 
 
-def google_snippet_search(site, category, city, log_fn=None):
-    """site e.g. 'www.linkedin.com'. Query format matches what's proven
-    to surface emails directly in the snippet: site:X "@gmail.com" "cat" city"""
-    query = f'site:{site} "@gmail.com" "{category}"'
-    if city:
-        query += f" {city}"
-    if log_fn:
-        log_fn(f"  Query: {query}")
+def find_platform_urls(category, city, log_fn=None):
+    """The site: operator returns 0 results on every backend we've tried
+    (Startpage/Bing/DDG all confirmed empty for site:-filtered category+
+    city combos), while plain queries reliably return 10 results on
+    Startpage. So: run broad queries (no site: filter), collect every
+    URL, then bucket by domain into linkedin/instagram/justdial/facebook.
+    This reuses the search path that's actually proven to work."""
+    base = f"{category} {city}" if city else category
+    queries = [
+        f"{base} linkedin",
+        f"{base} instagram",
+        f"{base} justdial",
+        f"{base} facebook",
+        f"{base} contact email",
+    ]
 
-    emails = set()
-    try:
-        resp = requests.get(
-            "https://www.google.com/search",
-            params={"q": query, "num": 30},
-            headers=GOOGLE_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
+    buckets = {name: [] for name in PLATFORM_DOMAINS}
+    seen = set()
+
+    for query in queries:
         if log_fn:
-            log_fn(f"    HTTP {resp.status_code}")
-        if resp.status_code != 200:
-            return emails
-    except Exception as e:
-        if log_fn:
-            log_fn(f"    FAIL: {str(e)[:60]}")
-        return emails
+            log_fn(f"  Query: {query}")
+        results = search_startpage(query, max_results=15, log_fn=log_fn)
+        if not results:
+            results = search_bing(query, max_results=15, log_fn=log_fn)
 
-    # Extract from the full response body — Google's snippet div classes
-    # change often, so a body-wide regex is more robust than chasing
-    # specific CSS selectors that break on markup updates.
-    emails = _clean_emails(resp.text)
-    # Filter to plausible personal/business addresses only (drop Google's
-    # own UI/analytics domains that sometimes leak into the page source)
-    emails = {e for e in emails if not e.endswith(("google.com", "gstatic.com", "googleapis.com"))}
+        for url in results:
+            if url in seen:
+                continue
+            seen.add(url)
+            domain = urlparse(url).netloc.lower()
+            for name, plat_domain in PLATFORM_DOMAINS.items():
+                if plat_domain in domain:
+                    buckets[name].append(url)
+                    break
+        time.sleep(SEARCH_DELAY)
 
     if log_fn:
-        if emails:
-            log_fn(f"    -> {len(emails)} email(s) found in results")
-        else:
-            log_fn(f"    -> no emails in snippets")
-    return emails
+        for name, urls in buckets.items():
+            log_fn(f"  {name}: {len(urls)} URL(s) matched")
 
-
-PLATFORM_SITES = {
-    "LinkedIn": "www.linkedin.com",
-    "Instagram": "www.instagram.com",
-    "JustDial": "www.justdial.com",
-    "Facebook": "www.facebook.com",
-}
+    return buckets
 
 
 def emails_from_profile_page(url, log_fn=None):
-    """Fetch a profile page directly (no JS) and pull emails from
-    meta description + visible text. Public LinkedIn/Instagram pages
-    often render a text snippet server-side for SEO even without login."""
+    """Fetch a profile/post/listing page directly and pull emails from
+    meta description + visible text. Public pages often render a text
+    snippet server-side for SEO even without login/JS."""
     html = _fetch(url)
     if not html:
         if log_fn:
@@ -440,21 +395,28 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
     log(f"Starting scrape: category='{category}' city='{city or ''}'")
     log("=" * 70)
 
+    # Phase 1: LinkedIn/Instagram/JustDial/Facebook via domain-bucketed
+    # broad search (site: filter proven to return 0 everywhere — see
+    # notes on find_platform_urls). Broad queries reliably return
+    # results on Startpage, so we filter by domain after the fact.
+    log("\nPhase 1: LinkedIn / Instagram / JustDial / Facebook")
+    log("-" * 70)
+    buckets = find_platform_urls(category, city, log_fn=log)
+
     platform_emails = {}
-
-    # Phases 1-4: LinkedIn, Instagram, JustDial, Facebook via direct
-    # Google snippet search — same query format proven to surface
-    # emails right in the results (site:X "@gmail.com" "category" city)
-    for i, (name, site) in enumerate(PLATFORM_SITES.items(), start=1):
-        log(f"\nPhase {i}: {name} (site:{site})")
-        log("-" * 70)
-        emails = google_snippet_search(site, category, city, log_fn=log)
+    for name, urls in buckets.items():
+        emails = set()
+        if urls:
+            log(f"\n  Extracting from {name} ({len(urls)} URL(s))...")
+            for u in urls:
+                found = emails_from_profile_page(u, log_fn=log)
+                emails.update(found)
+                time.sleep(PAGE_FETCH_DELAY)
         platform_emails[name] = emails
-        log(f"{name} result: {len(emails)} emails")
-        time.sleep(2)
+        log(f"  {name} result: {len(emails)} emails")
 
-    # Phase 5: Web + directories (proven working — found 22 emails last run)
-    log("\nPhase 5: Web Search + Directories")
+    # Phase 2: Web + directories (proven working)
+    log("\nPhase 2: Web Search + Directories")
     log("-" * 70)
     urls = collect_candidate_urls(category, city, keywords, max_results, log_fn=log)
     log(f"Web search collected {len(urls)} candidate sites")
