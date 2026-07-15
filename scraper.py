@@ -1,193 +1,165 @@
-"""4-SOURCE LEAD SCRAPER WITH CHROME MULTI-TAB AUTOMATION
-Sources: LinkedIn, Instagram, JustDial, Web
-"""
-import re, time, socket
-from urllib.parse import urlparse
+"""PRODUCTION EMAIL SCRAPER - Multi-Source with Google Parse"""
+import re, time
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import config, db
 
-try:
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.chrome.options import Options as ChromeOptions
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-HEADERS = {"User-Agent": USER_AGENT}
-EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+# Email extraction - strict but comprehensive
+EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+JUNK = {"example.com", "sentry.io", "wixpress.com", "test.com", "yourdomain.com", "domain.com"}
 
-def extract_emails(text):
-    """Extract and clean emails."""
-    return {m.lower() for m in EMAIL_RE.findall(text) 
-            if "example" not in m and "sentry" not in m and "test" not in m}
-
-def init_chrome():
-    """Create Chrome driver."""
-    if not SELENIUM_AVAILABLE:
-        return None
-    try:
-        opts = ChromeOptions()
-        for arg in ["--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"]:
-            opts.add_argument(arg)
-        opts.add_argument(f"user-agent={USER_AGENT}")
-        return webdriver.Chrome(options=opts)
-    except:
-        return None
-
-def scrape_multitab(urls, log_fn=None):
-    """Open URLs in parallel tabs and extract emails."""
-    if not urls or not SELENIUM_AVAILABLE:
-        return set()
+def clean_emails(text):
+    """Extract and filter emails from text"""
+    found = set()
+    for match in EMAIL_RE.finditer(text):
+        email = match.group(0).lower()
+        domain = email.split("@")[-1]
+        
+        # Skip junk
+        if domain in JUNK or any(x in domain for x in ["sentry", "wixpress", "example"]):
+            continue
+        if email.startswith(("noreply", "no-reply", "postmaster", "abuse")):
+            continue
+        
+        found.add(email)
     
-    driver = init_chrome()
-    if not driver:
-        return set()
+    return found
+
+def google_search_and_extract(query, log_fn=None):
+    """Search Google, extract emails from snippets AND page content"""
+    if log_fn:
+        log_fn(f"  Query: {query}")
     
     emails = set()
-    try:
-        # Open first URL
-        driver.get(urls[0])
-        time.sleep(2)
-        
-        # Open rest in new tabs
-        for url in urls[1:]:
-            driver.execute_script(f"window.open('{url}')")
-            time.sleep(0.5)
-        
-        time.sleep(3)  # Wait for all to load
-        
-        # Extract from each tab
-        for i in range(len(urls)):
-            try:
-                driver.switch_to.window(driver.window_handles[i])
-                time.sleep(1)
-                text = driver.find_element(By.TAG_NAME, "body").text
-                found = extract_emails(text)
-                emails.update(found)
-                if log_fn and found:
-                    log_fn(f"      Tab {i+1}: {len(found)} email(s)")
-            except:
-                pass
-    except:
-        pass
-    finally:
-        driver.quit()
     
-    return emails
-
-def google_search_urls(query, log_fn=None):
-    """Search Google for URLs."""
-    if log_fn:
-        log_fn(f"  Searching: {query}")
-    urls = []
     try:
-        resp = requests.get(f"https://www.google.com/search?q={query.replace(' ', '+')}", 
-                           headers=HEADERS, timeout=12)
+        # Search Google
+        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        resp = requests.get(search_url, headers=HEADERS, timeout=15)
+        
         if log_fn:
             log_fn(f"    HTTP {resp.status_code}")
         
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if href.startswith("http") and "google" not in href:
-                    urls.append(href)
-                if len(urls) >= 5:
-                    break
+        if resp.status_code != 200:
+            return emails
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # Method 1: Extract from search result snippets (most reliable)
+        for div in soup.find_all("div", {"class": ["g", "VwiC3b"]}):
+            # Get snippet text
+            snippet = div.get_text()
+            found = clean_emails(snippet)
+            emails.update(found)
+        
+        # Method 2: Extract from all text if Method 1 didn't work
+        if not emails:
+            all_text = soup.get_text()
+            found = clean_emails(all_text)
+            emails.update(found)
+        
+        if log_fn and emails:
+            log_fn(f"    ✓ Found {len(emails)} email(s)")
+        elif log_fn:
+            log_fn(f"    ○ No emails in results")
+    
     except Exception as e:
         if log_fn:
-            log_fn(f"    Error: {str(e)[:40]}")
+            log_fn(f"    ✗ Error: {str(e)[:50]}")
     
-    if log_fn and urls:
-        log_fn(f"    Found {len(urls)} URL(s)")
-    return urls
+    return emails
 
 def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
-    """4-source scraping: LinkedIn, Instagram, JustDial, Web"""
+    """4-source email extraction"""
     db.update_scrape_job(job_id, status="running")
     log = lambda msg: db.append_scrape_job_log(job_id, msg)
     
-    log(f"4-SOURCE SCRAPING: '{category}' in '{city or 'India'}'")
-    log("=" * 70)
+    log(f"{'='*70}")
+    log(f"4-SOURCE EMAIL SCRAPING")
+    log(f"Category: '{category}' | City: '{city or 'India'}'")
+    log(f"{'='*70}")
     
     all_emails = set()
     
-    # SOURCE 1: LINKEDIN
-    log("\nSOURCE 1: LinkedIn Profiles (Chrome Multi-Tab)")
-    log("-" * 70)
-    query = f"site:linkedin.com/in {category} {city}" if city else f"site:linkedin.com/in {category}"
-    urls = google_search_urls(query, log_fn=log)
-    if urls:
-        emails = scrape_multitab(urls, log_fn=log)
-        all_emails.update(emails)
-        log(f"  Result: {len(emails)} emails")
+    # SOURCE 1: LinkedIn
+    log(f"\n[1/4] LinkedIn Profiles")
+    log(f"{'-'*70}")
+    q = f'site:linkedin.com/in "{category}" "{city}"' if city else f'site:linkedin.com/in "{category}"'
+    emails = google_search_and_extract(q, log_fn=log)
+    all_emails.update(emails)
+    if emails:
+        log(f"  FOUND: {len(emails)} emails")
     time.sleep(2)
     
-    # SOURCE 2: INSTAGRAM
-    log("\nSOURCE 2: Instagram Profiles (Chrome Multi-Tab)")
-    log("-" * 70)
-    query = f"site:instagram.com {category} {city}" if city else f"site:instagram.com {category}"
-    urls = google_search_urls(query, log_fn=log)
-    if urls:
-        emails = scrape_multitab(urls, log_fn=log)
-        all_emails.update(emails)
-        log(f"  Result: {len(emails)} emails")
+    # SOURCE 2: Instagram
+    log(f"\n[2/4] Instagram Business Accounts")
+    log(f"{'-'*70}")
+    q = f'site:instagram.com "{category}" "{city}" @' if city else f'site:instagram.com "{category}"'
+    emails = google_search_and_extract(q, log_fn=log)
+    all_emails.update(emails)
+    if emails:
+        log(f"  FOUND: {len(emails)} emails")
     time.sleep(2)
     
-    # SOURCE 3: JUSTDIAL
-    log("\nSOURCE 3: JustDial Business Listings (Chrome Multi-Tab)")
-    log("-" * 70)
-    query = f"site:justdial.com {category} {city}" if city else f"site:justdial.com {category}"
-    urls = google_search_urls(query, log_fn=log)
-    if urls:
-        emails = scrape_multitab(urls, log_fn=log)
-        all_emails.update(emails)
-        log(f"  Result: {len(emails)} emails")
+    # SOURCE 3: JustDial
+    log(f"\n[3/4] JustDial Business Directory")
+    log(f"{'-'*70}")
+    q = f'site:justdial.com "{category}" "{city}"' if city else f'site:justdial.com "{category}"'
+    emails = google_search_and_extract(q, log_fn=log)
+    all_emails.update(emails)
+    if emails:
+        log(f"  FOUND: {len(emails)} emails")
     time.sleep(2)
     
-    # SOURCE 4: WEB (Google Search)
-    log("\nSOURCE 4: Web Search (Google)")
-    log("-" * 70)
-    query = f"{category} {city} email" if city else f"{category} email contact"
-    log(f"  Searching: {query}")
-    try:
-        resp = requests.get(f"https://www.google.com/search?q={query.replace(' ', '+')}", 
-                           headers=HEADERS, timeout=12)
-        if resp.status_code == 200:
-            emails = extract_emails(resp.text)
-            all_emails.update(emails)
-            log(f"  Result: {len(emails)} emails")
-    except:
-        log(f"  No results")
+    # SOURCE 4: General Web
+    log(f"\n[4/4] General Web Search")
+    log(f"{'-'*70}")
+    q = f'"{category}" "{city}" email contact' if city else f'"{category}" email contact'
+    emails = google_search_and_extract(q, log_fn=log)
+    all_emails.update(emails)
+    if emails:
+        log(f"  FOUND: {len(emails)} emails")
     
-    # INSERT ALL
-    log("\n" + "=" * 70)
-    log(f"TOTAL FOUND: {len(all_emails)} unique emails")
+    # INSERT TO DATABASE
+    log(f"\n{'='*70}")
+    log(f"TOTAL UNIQUE EMAILS: {len(all_emails)}")
+    log(f"{'='*70}")
     
     inserted = 0
-    for email in all_emails:
+    failed = 0
+    
+    for email in sorted(all_emails):
         try:
-            if db.insert_lead(
+            domain = email.split("@")[-1]
+            result = db.insert_lead(
                 email=email,
-                source_domain=email.split("@")[-1],
+                source_domain=domain,
                 source_url="",
                 source_type="scrape",
                 category=category,
                 city=city,
                 business_name=None,
                 mx_valid=1,
-            ):
+            )
+            if result:
                 inserted += 1
                 log(f"  ✓ {email}")
-        except:
-            pass
+            else:
+                failed += 1
+        except Exception as e:
+            failed += 1
     
-    log("=" * 70)
-    log(f"INSERTED: {inserted} new leads")
-    log("=" * 70)
+    log(f"\n{'='*70}")
+    log(f"RESULTS:")
+    log(f"  Found: {len(all_emails)} emails")
+    log(f"  Inserted: {inserted} new leads")
+    if failed > 0:
+        log(f"  Duplicates/Failed: {failed}")
+    log(f"{'='*70}")
     
     db.update_scrape_job(job_id, status="done", finished_at=datetime.utcnow())
