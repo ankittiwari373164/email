@@ -192,6 +192,71 @@ def find_instagram_profiles(category, city, max_results=8, log_fn=None):
     return urls[:max_results]
 
 
+# ============================================================
+# DIRECT GOOGLE SNIPPET SEARCH — matches the exact query format
+# that shows emails right in the search results (verified in
+# your screenshots): site:www.X.com "@gmail.com" "category" city
+# Extracts emails from the snippet text itself, no page visit
+# needed since Google already surfaces them.
+# ============================================================
+
+GOOGLE_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+}
+
+
+def google_snippet_search(site, category, city, log_fn=None):
+    """site e.g. 'www.linkedin.com'. Query format matches what's proven
+    to surface emails directly in the snippet: site:X "@gmail.com" "cat" city"""
+    query = f'site:{site} "@gmail.com" "{category}"'
+    if city:
+        query += f" {city}"
+    if log_fn:
+        log_fn(f"  Query: {query}")
+
+    emails = set()
+    try:
+        resp = requests.get(
+            "https://www.google.com/search",
+            params={"q": query, "num": 30},
+            headers=GOOGLE_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if log_fn:
+            log_fn(f"    HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            return emails
+    except Exception as e:
+        if log_fn:
+            log_fn(f"    FAIL: {str(e)[:60]}")
+        return emails
+
+    # Extract from the full response body — Google's snippet div classes
+    # change often, so a body-wide regex is more robust than chasing
+    # specific CSS selectors that break on markup updates.
+    emails = _clean_emails(resp.text)
+    # Filter to plausible personal/business addresses only (drop Google's
+    # own UI/analytics domains that sometimes leak into the page source)
+    emails = {e for e in emails if not e.endswith(("google.com", "gstatic.com", "googleapis.com"))}
+
+    if log_fn:
+        if emails:
+            log_fn(f"    -> {len(emails)} email(s) found in results")
+        else:
+            log_fn(f"    -> no emails in snippets")
+    return emails
+
+
+PLATFORM_SITES = {
+    "LinkedIn": "www.linkedin.com",
+    "Instagram": "www.instagram.com",
+    "JustDial": "www.justdial.com",
+    "Facebook": "www.facebook.com",
+}
+
+
 def emails_from_profile_page(url, log_fn=None):
     """Fetch a profile page directly (no JS) and pull emails from
     meta description + visible text. Public LinkedIn/Instagram pages
@@ -375,38 +440,21 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
     log(f"Starting scrape: category='{category}' city='{city or ''}'")
     log("=" * 70)
 
-    # Phase 1: LinkedIn
-    log("\nPhase 1: LinkedIn Profiles")
-    log("-" * 70)
-    linkedin_emails = set()
-    li_urls = find_linkedin_profiles(category, city, max_results=8, log_fn=log)
-    if li_urls:
-        log(f"  Found {len(li_urls)} profile(s), extracting...")
-        for u in li_urls:
-            emails = emails_from_profile_page(u, log_fn=log)
-            linkedin_emails.update(emails)
-            time.sleep(PAGE_FETCH_DELAY)
-    else:
-        log("  No LinkedIn profiles found")
-    log(f"LinkedIn result: {len(linkedin_emails)} emails from {len(li_urls)} profiles")
+    platform_emails = {}
 
-    # Phase 2: Instagram
-    log("\nPhase 2: Instagram Profiles")
-    log("-" * 70)
-    instagram_emails = set()
-    ig_urls = find_instagram_profiles(category, city, max_results=8, log_fn=log)
-    if ig_urls:
-        log(f"  Found {len(ig_urls)} profile(s), extracting...")
-        for u in ig_urls:
-            emails = emails_from_profile_page(u, log_fn=log)
-            instagram_emails.update(emails)
-            time.sleep(PAGE_FETCH_DELAY)
-    else:
-        log("  No Instagram profiles found")
-    log(f"Instagram result: {len(instagram_emails)} emails from {len(ig_urls)} profiles")
+    # Phases 1-4: LinkedIn, Instagram, JustDial, Facebook via direct
+    # Google snippet search — same query format proven to surface
+    # emails right in the results (site:X "@gmail.com" "category" city)
+    for i, (name, site) in enumerate(PLATFORM_SITES.items(), start=1):
+        log(f"\nPhase {i}: {name} (site:{site})")
+        log("-" * 70)
+        emails = google_snippet_search(site, category, city, log_fn=log)
+        platform_emails[name] = emails
+        log(f"{name} result: {len(emails)} emails")
+        time.sleep(2)
 
-    # Phase 3: Web + directories
-    log("\nPhase 3: Web Search + Directories")
+    # Phase 5: Web + directories (proven working — found 22 emails last run)
+    log("\nPhase 5: Web Search + Directories")
     log("-" * 70)
     urls = collect_candidate_urls(category, city, keywords, max_results, log_fn=log)
     log(f"Web search collected {len(urls)} candidate sites")
@@ -431,7 +479,8 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
     # Insert
     log("\nInserting leads...")
     total_inserted = 0
-    all_sources = {"linkedin": linkedin_emails, "instagram": instagram_emails, "web": web_emails}
+    all_sources = dict(platform_emails)
+    all_sources["web"] = web_emails
     for source, emails in all_sources.items():
         for email in emails:
             domain = email.split("@")[-1]
@@ -441,7 +490,7 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
                 email=email,
                 source_domain=domain,
                 source_url="",
-                source_type=source,
+                source_type=source.lower(),
                 category=category,
                 city=city,
                 business_name=None,
@@ -450,12 +499,12 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
                 total_inserted += 1
                 log(f"  ✓ {email}  ({source})")
 
+    total_found = sum(len(e) for e in all_sources.values())
     log("\n" + "=" * 70)
     log("SCRAPE COMPLETE")
-    log(f"LinkedIn:  {len(linkedin_emails)} emails")
-    log(f"Instagram: {len(instagram_emails)} emails")
-    log(f"Web:       {len(web_emails)} emails")
-    log(f"TOTAL:     {len(linkedin_emails) + len(instagram_emails) + len(web_emails)} found, {total_inserted} inserted")
+    for source, emails in all_sources.items():
+        log(f"{source}: {len(emails)} emails")
+    log(f"TOTAL: {total_found} found, {total_inserted} inserted")
     log("=" * 70)
 
     db.update_scrape_job(job_id, status="done", finished_at=datetime.utcnow())
