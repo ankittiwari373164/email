@@ -442,6 +442,39 @@ def harvest_linkedin_emails(category, city=None, max_profiles=10, log_fn=None):
     return urls[:max_results]
 
 
+def search_startpage(query, max_results=20, log_fn=None):
+    """Startpage proxies Google results, no API key/card needed for the
+    plain web UI. Best-effort like the others — logs its HTTP status so
+    failures are visible rather than silent."""
+    urls = []
+    try:
+        resp = requests.post(
+            "https://www.startpage.com/sp/search",
+            data={"query": query},
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if log_fn:
+            log_fn(f"    Startpage '{query}' -> HTTP {resp.status_code}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        if log_fn:
+            log_fn(f"    Startpage '{query}' -> FAILED: {e}")
+        return urls
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.select("a.w-gl__result-title, a.result-link"):
+        href = a.get("href")
+        if href and href.startswith("http"):
+            urls.append(href)
+        if len(urls) >= max_results:
+            break
+
+    if log_fn:
+        log_fn(f"    -> {len(urls)} result(s)")
+    return urls[:max_results]
+
+
 SEARCH_BACKENDS = [search_google_cse, search_duckduckgo, search_bing, search_mojeek, search_startpage]
 
 
