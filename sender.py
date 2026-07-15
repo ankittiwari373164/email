@@ -42,20 +42,12 @@ def render_template(template, lead):
     )
 
 
-def build_unsubscribe_link(lead_id):
-    return f"{config.PUBLIC_BASE_URL}/unsubscribe/{lead_id}"
-
-
 def send_one(lead, account, campaign, sender_name=None):
     subject = render_template(campaign["subject_template"], lead)
-    body = render_template(campaign["body_template"], lead)
-    footer = config.EMAIL_FOOTER_TEMPLATE.format(
-        sender_name=sender_name or account["display_name"] or account["email"],
-        company_name=config.COMPANY_NAME,
-        company_address=config.COMPANY_ADDRESS,
-        unsubscribe_link=build_unsubscribe_link(lead["id"]),
-    )
-    full_body = body + footer
+    full_body = render_template(campaign["body_template"], lead)
+    # No auto-appended footer/unsubscribe link — the template body is
+    # sent exactly as written, since the campaign's own message already
+    # includes whatever sign-off/footer it needs.
 
     image_bytes = None
     if campaign.get("image_base64"):

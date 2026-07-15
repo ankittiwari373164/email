@@ -5,3 +5,4 @@ __pycache__/
 credentials/client_secret.json
 tokens/*.json
 leads.db
+chrome_profile/
