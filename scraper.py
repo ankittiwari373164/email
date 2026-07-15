@@ -294,7 +294,122 @@ def search_mojeek(query, max_results=20, log_fn=None):
     return urls[:max_results]
 
 
-def search_startpage(query, max_results=20, log_fn=None):
+def search_linkedin_profiles(query, max_results=20, log_fn=None):
+    """Search LinkedIn profiles directly using DuckDuckGo's site: operator.
+    LinkedIn's own API is restricted, but we can scrape public profile search
+    results via site:linkedin.com queries. Looks for emails in profile text
+    (many people list contact info in their headline or summary)."""
+    urls = []
+    linkedin_query = f"site:linkedin.com {query} email OR gmail OR contact"
+    try:
+        resp = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": linkedin_query},
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if log_fn:
+            log_fn(f"    LinkedIn (via DDG) '{query}' -> HTTP {resp.status_code}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        if log_fn:
+            log_fn(f"    LinkedIn (via DDG) '{query}' -> FAILED: {e}")
+        return urls
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.select("a.result__a"):
+        href = a.get("href")
+        if href and "linkedin.com/in/" in href:
+            urls.append(href)
+        if len(urls) >= max_results:
+            break
+
+    if log_fn:
+        log_fn(f"    -> {len(urls)} LinkedIn profile(s)")
+    return urls[:max_results]
+
+
+def emails_from_linkedin_profile(profile_url):
+    """Fetch a LinkedIn profile page (public, no login) and extract any
+    emails found in the headline, summary, or about sections. LinkedIn
+    profiles don't always have emails, but many professionals list contact
+    info there."""
+    html = _fetch(profile_url)
+    if not html:
+        return set(), None
+
+    soup = BeautifulSoup(html, "html.parser")
+    # LinkedIn profile name is usually in the page title or main heading
+    name = None
+    if soup.title:
+        title = soup.title.string or ""
+        if " | LinkedIn" in title:
+            name = title.split(" | LinkedIn")[0].strip()
+    if not name:
+        for h1 in soup.find_all("h1"):
+            name = h1.get_text().strip()
+            if name:
+                break
+
+    # Extract all text from the profile (headline, summary, about, etc)
+    # LinkedIn puts contact info in various places; scrape broadly.
+    profile_text = soup.get_text()
+    emails = _clean_emails(profile_text)
+
+    # Filter to only emails that look like they belong to this person
+    # (not company-domain-only emails, which are less useful for cold outreach)
+    personal_emails = set()
+    for email in emails:
+        domain = email.split("@")[-1]
+        # Prefer Gmail, Outlook, Yahoo, and other personal domains over
+        # company domains (which are less likely to be personal contact).
+        if any(p in domain for p in ("gmail", "yahoo", "outlook", "hotmail", "protonmail", "icloud")):
+            personal_emails.add(email)
+        elif domain not in {"linkedin.com", "google.com"}:  # skip platform domains
+            personal_emails.add(email)
+
+    return personal_emails, name
+
+
+def harvest_linkedin_emails(category, city=None, max_profiles=10, log_fn=None):
+    """Find LinkedIn profiles for a category+city and extract contact
+    emails. Returns (collected_emails, total_profiles_checked)."""
+    query = category
+    if city:
+        query += f" {city}"
+
+    if log_fn:
+        log_fn(f"  Searching LinkedIn for '{query}'...")
+
+    try:
+        profile_urls = search_linkedin_profiles(query, max_results=max_profiles, log_fn=log_fn)
+    except Exception as e:
+        if log_fn:
+            log_fn(f"    LinkedIn search failed: {e}")
+        return set(), 0
+
+    if not profile_urls:
+        if log_fn:
+            log_fn("    No LinkedIn profiles found for this query")
+        return set(), 0
+
+    emails = set()
+    for i, profile_url in enumerate(profile_urls):
+        try:
+            profile_emails, name = emails_from_linkedin_profile(profile_url)
+            if profile_emails:
+                if log_fn:
+                    log_fn(f"      {name or 'Unknown'}: found {len(profile_emails)} email(s)")
+                emails.update(profile_emails)
+        except Exception as e:
+            if log_fn:
+                log_fn(f"      {profile_url}: {type(e).__name__}")
+        time.sleep(PAGE_FETCH_DELAY)
+
+    return emails, len(profile_urls)
+
+
+
     """Startpage proxies Google results, no API key/card needed for the
     plain web UI. Best-effort like the others — logs its HTTP status so
     failures are visible rather than silent."""
@@ -548,21 +663,51 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
     log = lambda msg: db.append_scrape_job_log(job_id, msg)
     log(f"Starting scrape for category='{category}' city='{city or ''}'")
 
-    urls = collect_candidate_urls(category, city, keywords, max_results, log_fn=log)
-    log(f"Total candidate sites collected: {len(urls)}")
+    # Try LinkedIn first (educational, often has personal email addresses)
+    log("Phase 1: LinkedIn profiles...")
+    linkedin_emails, linkedin_profiles_checked = harvest_linkedin_emails(
+        category, city, max_profiles=8, log_fn=log
+    )
+    log(f"LinkedIn: found {len(linkedin_emails)} emails from {linkedin_profiles_checked} profiles")
 
-    if not urls:
-        log("No candidate sites found from any query/engine combination. "
-            "This usually means the search engines are blocking/rate-limiting "
+    urls = collect_candidate_urls(category, city, keywords, max_results, log_fn=log)
+    log(f"Phase 2: Web search: {len(urls)} candidate sites collected")
+
+    if not urls and not linkedin_emails:
+        log("No candidate sites or LinkedIn profiles found from any source. "
+            "This usually means search engines are blocking/rate-limiting "
             "this server's IP (common on cloud hosts). Consider: trying again "
-            "later, using a narrower/different category or city, or adding "
-            "more directory sites to DIRECTORY_SITES in scraper.py.")
+            "later, using a narrower/different category or city, or checking "
+            "logs for specific HTTP error codes.")
 
     sites_checked = 0
     emails_found = 0
     emails_inserted = 0
     mx_cache = {}
 
+    # First, insert LinkedIn emails
+    for email in linkedin_emails:
+        emails_found += 1
+        edomain = email.split("@")[-1]
+        if edomain not in mx_cache:
+            mx_cache[edomain] = has_mx_record(edomain)
+        mx_ok = mx_cache[edomain]
+
+        inserted = db.insert_lead(
+            email=email,
+            source_domain="linkedin.com",
+            source_url="https://linkedin.com",
+            source_type="linkedin",
+            category=category,
+            city=city,
+            business_name=None,
+            mx_valid=1 if mx_ok else 0,
+        )
+        if inserted:
+            emails_inserted += 1
+            log(f"  + {email}  (LinkedIn, mx_valid={mx_ok})")
+
+    # Then, scrape web sites for more emails
     for url in urls:
         sites_checked += 1
         domain = urlparse(url).netloc
@@ -611,4 +756,4 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
         )
 
     db.update_scrape_job(job_id, status="done", finished_at=datetime.utcnow())
-    log(f"Done. Checked {sites_checked} sites, found {emails_found} emails, inserted {emails_inserted} new leads.")
+    log(f"Done. Checked LinkedIn ({linkedin_profiles_checked} profiles), web sites ({sites_checked}), found {emails_found} emails total, inserted {emails_inserted} new leads.")
