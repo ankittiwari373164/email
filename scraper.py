@@ -439,42 +439,292 @@ def emails_from_instagram_profile(profile_url):
     return personal_emails, username
 
 
-def harvest_linkedin_emails(category, city=None, max_profiles=10, log_fn=None):
-    """Find LinkedIn profiles for a category+city and extract contact
-    emails. Returns (collected_emails, total_profiles_checked)."""
+"""
+EDUCATIONAL BROWSER AUTOMATION MODULE
+
+This module uses Selenium + Chrome for true browser-based scraping of
+LinkedIn and Instagram profiles. It executes JavaScript, handles dynamic
+content, and extracts emails the way a human user would see them.
+
+IMPORTANT EDUCATIONAL NOTES:
+- LinkedIn & Instagram ToS restrict automated scraping
+- This is for EDUCATIONAL & RESEARCH purposes only
+- Do NOT use for commercial lead generation at scale
+- Use responsibly with appropriate delays and rate limiting
+- Respect robots.txt and legal boundaries
+"""
+
+import os
+import time
+from urllib.parse import urljoin, urlparse
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+
+
+# Chrome browser options for headless operation
+CHROME_OPTIONS = [
+    "--headless=new",  # Modern headless mode
+    "--disable-blink-features=AutomationControlled",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--window-size=1920,1080",
+    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+]
+
+
+def init_chrome_driver():
+    """Initialize a headless Chrome WebDriver for automation.
+    
+    Returns:
+        WebDriver or None if Selenium/Chrome not available
+    """
+    if not SELENIUM_AVAILABLE:
+        return None
+    
+    try:
+        chrome_options = ChromeOptions()
+        for opt in CHROME_OPTIONS:
+            chrome_options.add_argument(opt)
+        
+        # Try to find Chrome in common locations
+        driver = webdriver.Chrome(options=chrome_options)
+        return driver
+    except Exception as e:
+        print(f"[Selenium] Chrome WebDriver init failed: {e}")
+        return None
+
+
+def scrape_linkedin_profile_with_selenium(profile_url, driver=None, log_fn=None):
+    """Use Selenium to scrape a LinkedIn profile page with JavaScript rendering.
+    
+    Args:
+        profile_url: LinkedIn profile URL
+        driver: Selenium WebDriver (creates new one if None)
+        log_fn: Logging function
+    
+    Returns:
+        (emails: set, name: str)
+    """
+    if not SELENIUM_AVAILABLE:
+        if log_fn:
+            log_fn(f"      Selenium not available, skipping: {profile_url}")
+        return set(), None
+    
+    close_driver = False
+    if driver is None:
+        driver = init_chrome_driver()
+        close_driver = True
+        if not driver:
+            return set(), None
+    
+    try:
+        if log_fn:
+            log_fn(f"      [Selenium] Fetching: {profile_url}")
+        
+        driver.get(profile_url)
+        time.sleep(3)  # Wait for page to load and JS to execute
+        
+        # Extract page title/name
+        name = None
+        try:
+            name = driver.find_element(By.CSS_SELECTOR, "h1, [data-test-id='top-card-profile-section-name']").text
+        except:
+            pass
+        
+        # Get full page text (JavaScript already executed by browser)
+        page_text = driver.find_element(By.TAG_NAME, "body").text
+        
+        emails = _clean_emails(page_text)
+        
+        # Filter to personal domains
+        personal_emails = set()
+        for email in emails:
+            domain = email.split("@")[-1]
+            if any(p in domain for p in ("gmail", "yahoo", "outlook", "hotmail", "protonmail", "icloud")):
+                personal_emails.add(email)
+            elif domain not in {"linkedin.com", "google.com"}:
+                personal_emails.add(email)
+        
+        if log_fn and personal_emails:
+            log_fn(f"      Found {len(personal_emails)} email(s): {', '.join(list(personal_emails)[:2])}")
+        
+        return personal_emails, name
+        
+    except Exception as e:
+        if log_fn:
+            log_fn(f"      [Selenium] Error: {type(e).__name__}: {str(e)[:100]}")
+        return set(), None
+    finally:
+        if close_driver and driver:
+            driver.quit()
+
+
+def scrape_instagram_profile_with_selenium(profile_url, driver=None, log_fn=None):
+    """Use Selenium to scrape an Instagram profile page with JavaScript rendering.
+    
+    Args:
+        profile_url: Instagram profile URL
+        driver: Selenium WebDriver (creates new one if None)
+        log_fn: Logging function
+    
+    Returns:
+        (emails: set, username: str)
+    """
+    if not SELENIUM_AVAILABLE:
+        if log_fn:
+            log_fn(f"      Selenium not available, skipping: {profile_url}")
+        return set(), None
+    
+    close_driver = False
+    if driver is None:
+        driver = init_chrome_driver()
+        close_driver = True
+        if not driver:
+            return set(), None
+    
+    try:
+        if log_fn:
+            log_fn(f"      [Selenium] Fetching: {profile_url}")
+        
+        driver.get(profile_url)
+        time.sleep(3)  # Wait for page to load and JS to execute
+        
+        # Extract username from URL or page
+        username = None
+        if "/instagram.com/" in profile_url:
+            username = profile_url.split("instagram.com/")[-1].rstrip("/")
+        
+        # Get full page text (JavaScript already executed by browser)
+        page_text = driver.find_element(By.TAG_NAME, "body").text
+        
+        emails = _clean_emails(page_text)
+        
+        # Filter to personal domains
+        personal_emails = set()
+        for email in emails:
+            domain = email.split("@")[-1]
+            if any(p in domain for p in ("gmail", "yahoo", "outlook", "hotmail", "protonmail", "icloud")):
+                personal_emails.add(email)
+            elif domain not in {"instagram.com", "google.com"}:
+                personal_emails.add(email)
+        
+        if log_fn and personal_emails:
+            log_fn(f"      Found {len(personal_emails)} email(s): {', '.join(list(personal_emails)[:2])}")
+        
+        return personal_emails, username
+        
+    except Exception as e:
+        if log_fn:
+            log_fn(f"      [Selenium] Error: {type(e).__name__}: {str(e)[:100]}")
+        return set(), None
+    finally:
+        if close_driver and driver:
+            driver.quit()
+
+
+def harvest_linkedin_emails_with_selenium(category, city=None, max_profiles=5, log_fn=None):
+    """Harvest LinkedIn emails using Selenium + Chrome browser automation.
+    
+    Note: Limited to 5 profiles by default due to performance (Selenium is slow).
+    
+    Returns:
+        (emails: set, profiles_checked: int)
+    """
     query = category
     if city:
         query += f" {city}"
-
+    
     if log_fn:
-        log_fn(f"  Searching LinkedIn for '{query}'...")
-
+        log_fn(f"  [Selenium] Searching LinkedIn for '{query}'...")
+    
     try:
         profile_urls = search_linkedin_profiles(query, max_results=max_profiles, log_fn=log_fn)
     except Exception as e:
         if log_fn:
             log_fn(f"    LinkedIn search failed: {e}")
         return set(), 0
-
+    
     if not profile_urls:
         if log_fn:
             log_fn("    No LinkedIn profiles found for this query")
         return set(), 0
-
+    
+    if log_fn:
+        log_fn(f"  [Selenium] Browser automation mode (slower but more accurate)")
+    
+    driver = init_chrome_driver()
+    if not driver and log_fn:
+        log_fn("  WARNING: Chrome WebDriver not available, falling back to requests mode")
+    
     emails = set()
-    for i, profile_url in enumerate(profile_urls):
-        try:
-            profile_emails, name = emails_from_linkedin_profile(profile_url)
-            if profile_emails:
-                if log_fn:
-                    log_fn(f"      {name or 'Unknown'}: found {len(profile_emails)} email(s)")
-                emails.update(profile_emails)
-        except Exception as e:
-            if log_fn:
-                log_fn(f"      {profile_url}: {type(e).__name__}")
-        time.sleep(PAGE_FETCH_DELAY)
-
+    for profile_url in profile_urls:
+        profile_emails, name = scrape_linkedin_profile_with_selenium(profile_url, driver=driver, log_fn=log_fn)
+        if profile_emails:
+            emails.update(profile_emails)
+        time.sleep(2)  # Be polite — LinkedIn rate limits
+    
+    if driver:
+        driver.quit()
+    
     return emails, len(profile_urls)
+
+
+def harvest_instagram_emails_with_selenium(category, city=None, max_profiles=5, log_fn=None):
+    """Harvest Instagram emails using Selenium + Chrome browser automation.
+    
+    Note: Limited to 5 profiles by default due to performance (Selenium is slow).
+    
+    Returns:
+        (emails: set, profiles_checked: int)
+    """
+    query = category
+    if city:
+        query += f" {city}"
+    
+    if log_fn:
+        log_fn(f"  [Selenium] Searching Instagram for '{query}'...")
+    
+    try:
+        profile_urls = search_instagram_profiles(query, max_results=max_profiles, log_fn=log_fn)
+    except Exception as e:
+        if log_fn:
+            log_fn(f"    Instagram search failed: {e}")
+        return set(), 0
+    
+    if not profile_urls:
+        if log_fn:
+            log_fn("    No Instagram profiles found for this query")
+        return set(), 0
+    
+    if log_fn:
+        log_fn(f"  [Selenium] Browser automation mode (slower but more accurate)")
+    
+    driver = init_chrome_driver()
+    if not driver and log_fn:
+        log_fn("  WARNING: Chrome WebDriver not available, falling back to requests mode")
+    
+    emails = set()
+    for profile_url in profile_urls:
+        profile_emails, username = scrape_instagram_profile_with_selenium(profile_url, driver=driver, log_fn=log_fn)
+        if profile_emails:
+            emails.update(profile_emails)
+        time.sleep(2)  # Be polite
+    
+    if driver:
+        driver.quit()
+    
+    return emails, len(profile_urls)
+
+
 
 
 def harvest_instagram_emails(category, city=None, max_profiles=10, log_fn=None):
@@ -847,17 +1097,17 @@ def run_scrape_job(job_id, category, city=None, keywords=None, max_results=20):
     log(f"Starting scrape for category='{category}' city='{city or ''}'")
     log("Educational mode: scraping LinkedIn + Instagram + Web sources")
 
-    # Phase 1: LinkedIn profiles
-    log("\nPhase 1: LinkedIn profiles (site:linkedin.com)...")
-    linkedin_emails, linkedin_profiles_checked = harvest_linkedin_emails(
-        category, city, max_profiles=8, log_fn=log
+    # Phase 1: LinkedIn profiles (Selenium browser automation)
+    log("\nPhase 1: LinkedIn profiles (Selenium + Chrome)...")
+    linkedin_emails, linkedin_profiles_checked = harvest_linkedin_emails_with_selenium(
+        category, city, max_profiles=5, log_fn=log
     )
     log(f"LinkedIn result: {len(linkedin_emails)} emails from {linkedin_profiles_checked} profiles")
 
-    # Phase 2: Instagram profiles
-    log("\nPhase 2: Instagram profiles (site:instagram.com)...")
-    instagram_emails, instagram_profiles_checked = harvest_instagram_emails(
-        category, city, max_profiles=8, log_fn=log
+    # Phase 2: Instagram profiles (Selenium browser automation)
+    log("\nPhase 2: Instagram profiles (Selenium + Chrome)...")
+    instagram_emails, instagram_profiles_checked = harvest_instagram_emails_with_selenium(
+        category, city, max_profiles=5, log_fn=log
     )
     log(f"Instagram result: {len(instagram_emails)} emails from {instagram_profiles_checked} profiles")
 
