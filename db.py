@@ -156,6 +156,7 @@ def init_db():
         cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_base64 TEXT")
         cur.execute("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS image_placement TEXT DEFAULT 'attachment'")
         cur.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_error TEXT")
+        cur.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMP")
 
 
 # ---------- accounts ----------
@@ -197,6 +198,13 @@ def reset_daily_counts_if_needed():
             UPDATE accounts SET sent_today = 0, last_reset_date = %s
             WHERE last_reset_date IS NULL OR last_reset_date != %s
         """, (date.today(), date.today()))
+        # Auto-recover accounts that were paused for a known-temporary
+        # rate limit whose cooldown has now passed — no manual
+        # "Reactivate" click needed for this specific case.
+        cur.execute("""
+            UPDATE accounts SET status='active', cooldown_until=NULL
+            WHERE status='error' AND cooldown_until IS NOT NULL AND cooldown_until <= %s
+        """, (datetime.utcnow(),))
 
 
 def get_account_with_capacity():
@@ -219,10 +227,21 @@ def increment_sent_count(account_id):
         cur.execute("UPDATE accounts SET sent_today = sent_today + 1 WHERE id = %s", (account_id,))
 
 
-def set_account_error(account_id, error):
+def set_account_error(account_id, error, cooldown_until=None):
+    """cooldown_until: if the error is a known-temporary rate limit with
+    a specific expiry (Gmail's 429 responses include a "Retry after
+    <timestamp>" — see sender.py's parsing), the account auto-recovers
+    to 'active' once that time passes, no manual Reactivate click
+    needed. If cooldown_until is None (unknown/permanent-looking error,
+    e.g. revoked OAuth token), it stays in 'error' until someone
+    reactivates it by hand, since auto-retrying that would just fail
+    again immediately."""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE accounts SET status='error', last_error=%s WHERE id=%s", (error, account_id))
+        cur.execute(
+            "UPDATE accounts SET status='error', last_error=%s, cooldown_until=%s WHERE id=%s",
+            (error, cooldown_until, account_id),
+        )
 
 
 def set_account_status(account_id, status, error=None):

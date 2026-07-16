@@ -16,6 +16,7 @@ though nothing was actually wrong with the account. Now:
     fully out of send quota) mark the ACCOUNT as 'error' and move on to
     the next account.
 """
+import re
 import time
 from datetime import datetime
 
@@ -78,6 +79,29 @@ def _is_account_level_error(error_message):
     return any(marker in msg for marker in ACCOUNT_LEVEL_ERROR_MARKERS)
 
 
+RETRY_AFTER_RE = re.compile(r"Retry after (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)")
+
+
+def _extract_retry_after(error_message):
+    """Gmail's 429 rate-limit errors include an explicit expiry, e.g.
+    'Retry after 2026-07-16T00:34:55.867Z (Mail sending)'. If we can
+    parse it, the account auto-recovers at that exact time instead of
+    needing a manual Reactivate click. Returns None if not found/
+    unparseable — caller falls back to requiring manual reactivation."""
+    if not error_message:
+        return None
+    match = RETRY_AFTER_RE.search(error_message)
+    if not match:
+        return None
+    try:
+        ts = match.group(1)
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        return datetime.fromisoformat(ts).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def run_campaign(campaign_id, max_sends=None):
     """Send a batch of emails for a campaign. Call this repeatedly (manually
     via 'Send 50', or automatically via scheduler.py) — it stops naturally
@@ -127,7 +151,8 @@ def run_campaign(campaign_id, max_sends=None):
                   f"via account {account['email']}: {err}", flush=True)
 
             if _is_account_level_error(err):
-                db.set_account_error(account["id"], err)
+                cooldown_until = _extract_retry_after(err)
+                db.set_account_error(account["id"], err, cooldown_until=cooldown_until)
                 failed_account_ids.add(account["id"])
                 # leave the lead as 'new' so it's retried on a different account
             else:

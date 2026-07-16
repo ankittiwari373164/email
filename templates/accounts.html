@@ -4,7 +4,7 @@
 <a class="btn btn-primary mb-3" href="/accounts/connect">+ Connect a Gmail account</a>
 
 <table class="table table-bordered bg-white">
-  <thead><tr><th>#</th><th>Email</th><th>Status</th><th>Sent Today</th><th>Daily Limit</th><th>Last Error</th><th></th></tr></thead>
+  <thead><tr><th>#</th><th>Email</th><th>Status</th><th>Sent Today</th><th>Daily Limit</th><th>Last Error</th><th>Auto-Retry At</th><th></th></tr></thead>
   <tbody>
     {% for a in accounts %}
     <tr>
@@ -14,10 +14,15 @@
       <td>{{ a.sent_today }}</td>
       <td>{{ a.daily_limit }}</td>
       <td class="text-danger small">{{ a.last_error or '' }}</td>
+      <td class="small">
+        {% if a.cooldown_until %}
+          {{ a.cooldown_until }} UTC
+        {% endif %}
+      </td>
       <td>
         {% if a.status != 'active' %}
         <form method="post" action="/accounts/{{ a.id }}/reactivate" style="display:inline">
-          <button class="btn btn-sm btn-outline-success">Reactivate</button>
+          <button class="btn btn-sm btn-outline-success">Reactivate now</button>
         </form>
         {% endif %}
       </td>
