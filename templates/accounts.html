@@ -1,6 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
 <h3>Gmail Accounts (5 needed, 500/day each)</h3>
+{% if smtp_configured %}
+<div class="alert alert-success">
+  <strong>✓ Sending via your domain (SMTP):</strong> {{ smtp_user }}.
+  Emails send from this authenticated address, not Gmail.
+  {% if not accounts %}
+  <form method="post" action="/accounts/register-smtp" class="mt-2">
+    <button class="btn btn-sm btn-success">Register {{ smtp_user }} as sending account</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
 <a class="btn btn-primary mb-3" href="/accounts/connect">+ Connect a Gmail account</a>
 
 <table class="table table-bordered bg-white">
