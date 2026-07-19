@@ -15,10 +15,8 @@ Exposes send_email(...) with the SAME signature the app calls on
 gmail_client / smtp_client, so sender.py doesn't care which backend runs.
 """
 import os
-import json
 import base64
-import urllib.request
-import urllib.error
+import requests
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "")
@@ -113,25 +111,27 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
             "content": base64.b64encode(image_bytes).decode(),
         }]
 
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        RESEND_ENDPOINT,
-        data=data,
-        headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
+        # requests sends its own User-Agent, which Cloudflare (fronting
+        # Resend) accepts — unlike urllib's default, which triggers a 403
+        # error 1010 bot block from datacenter IPs like Render's.
+        "Accept": "application/json",
+    }
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            return result.get("id"), None
-    except urllib.error.HTTPError as e:
-        # Surface Resend's error body so it's diagnosable in the account's
-        # last_error (e.g. "domain not verified", "invalid from").
-        body = e.read().decode("utf-8", "replace")
-        raise RuntimeError(f"Resend API {e.code}: {body}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Resend connection error: {e.reason}")
+        resp = requests.post(RESEND_ENDPOINT, json=payload, headers=headers, timeout=30)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Resend connection error: {e}")
+
+    if resp.status_code >= 400:
+        # Surface the error body so it's diagnosable in last_error.
+        raise RuntimeError(f"Resend API {resp.status_code}: {resp.text[:300]}")
+
+    try:
+        result = resp.json()
+    except ValueError:
+        raise RuntimeError(f"Resend returned non-JSON: {resp.text[:200]}")
+
+    return result.get("id"), None
