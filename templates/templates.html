@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Professional Email Templates</h3>
+<p class="text-muted">Choose a template below and customize it for your campaigns.</p>
+
+<div class="row">
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">🚀 Digital Marketing Services</h5>
+                <p class="card-text text-muted">Perfect for digital agencies, marketing consultants, and web designers targeting businesses looking to grow online.</p>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#previewModal" data-template="digital_marketing">Preview</button>
+                <button class="btn btn-success btn-sm" onclick="useTemplate('digital_marketing')">Use This Template</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">🏢 Real Estate Marketing</h5>
+                <p class="card-text text-muted">Ideal for real estate agents, brokers, and property managers looking to generate leads and close more deals.</p>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#previewModal" data-template="real_estate">Preview</button>
+                <button class="btn btn-success btn-sm" onclick="useTemplate('real_estate')">Use This Template</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">📈 E-commerce Growth</h5>
+                <p class="card-text text-muted">Great for online stores and e-commerce businesses looking to drive sales and customer retention.</p>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#previewModal" data-template="ecommerce">Preview</button>
+                <button class="btn btn-success btn-sm" onclick="useTemplate('ecommerce')">Use This Template</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Template Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <iframe id="previewFrame" style="width: 100%; height: 600px; border: none; background: white;"></iframe>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const templatePreviews = {
+    digital_marketing: `<iframe src="/api/templates/digital_marketing/preview" style="width: 100%; height: 600px; border: none;"></iframe>`,
+    real_estate: `<iframe src="/api/templates/real_estate/preview" style="width: 100%; height: 600px; border: none;"></iframe>`,
+    ecommerce: `<iframe src="/api/templates/ecommerce/preview" style="width: 100%; height: 600px; border: none;"></iframe>`,
+};
+
+document.getElementById('previewModal').addEventListener('show.bs.modal', function(e) {
+    const template = e.relatedTarget.getAttribute('data-template');
+    document.getElementById('previewFrame').src = `/api/templates/${template}/preview`;
+});
+
+function useTemplate(templateName) {
+    fetch(`/api/templates/${templateName}`)
+        .then(r => r.json())
+        .then(data => {
+            // Populate campaign form with template data
+            document.getElementById('subject_template').value = data.subject;
+            document.getElementById('body_template').innerHTML = data.body;
+            document.getElementById('body_template').value = data.body;
+            alert(`✓ Template loaded! Scroll down to customize and save your campaign.`);
+            window.location.hash = '#campaign-form';
+        })
+        .catch(err => alert('Error loading template: ' + err));
+}
+</script>
+{% endblock %}

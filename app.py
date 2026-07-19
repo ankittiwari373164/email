@@ -86,6 +86,61 @@ def campaigns_page():
     return render_template("campaigns.html", campaigns=db.list_campaigns())
 
 
+@app.route("/templates")
+def templates_page():
+    return render_template("templates.html")
+
+
+@app.route("/api/templates/<template_name>/preview")
+def template_preview(template_name):
+    import email_templates
+    
+    templates = {
+        "digital_marketing": email_templates.TEMPLATE_DIGITAL_MARKETING,
+        "real_estate": email_templates.TEMPLATE_REAL_ESTATE,
+        "ecommerce": email_templates.TEMPLATE_ECOMMERCE,
+    }
+    
+    if template_name not in templates:
+        return "Template not found", 404
+    
+    config = templates[template_name]["config"].copy()
+    # Add sample personalization
+    config["sender_name"] = "Ankit Tiwari"
+    config["contact_phone"] = "+91 92110 72781"
+    config["contact_email"] = "info@yourcompany.com"
+    config["contact_website"] = "www.yourcompany.com"
+    
+    html = email_templates.build_professional_html_email(**config)
+    return html
+
+
+@app.route("/api/templates/<template_name>")
+def template_api(template_name):
+    import email_templates
+    
+    templates = {
+        "digital_marketing": email_templates.TEMPLATE_DIGITAL_MARKETING,
+        "real_estate": email_templates.TEMPLATE_REAL_ESTATE,
+        "ecommerce": email_templates.TEMPLATE_ECOMMERCE,
+    }
+    
+    if template_name not in templates:
+        return {"error": "Template not found"}, 404
+    
+    template = templates[template_name]
+    config = template["config"].copy()
+    config["sender_name"] = config.get("sender_name", "")
+    
+    body_html = email_templates.build_professional_html_email(**config)
+    
+    return jsonify({
+        "name": template["name"],
+        "subject": template["subject"],
+        "body": body_html
+    })
+
+
 @app.route("/campaigns/<int:campaign_id>/edit")
 def campaign_edit_page(campaign_id):
     campaign = db.get_campaign(campaign_id)

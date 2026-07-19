@@ -6,3 +6,5 @@ credentials/client_secret.json
 tokens/*.json
 leads.db
 chrome_profile/
+startpage_profile/
+_proxy_ext/
