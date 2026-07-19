@@ -13,7 +13,7 @@ import gmail_client
 import sender
 import reply_tracker
 import scheduler
-import scraper
+
 import verify
 
 app = Flask(__name__)
@@ -81,6 +81,14 @@ def accounts_reactivate(account_id):
     return redirect(url_for("accounts_page"))
 
 
+@app.route("/accounts/<int:account_id>/delete", methods=["POST"])
+def accounts_delete(account_id):
+    """Permanently remove a connected Gmail account from the rotation."""
+    db.delete_account(account_id)
+    flash("Account removed.")
+    return redirect(url_for("accounts_page"))
+
+
 @app.route("/campaigns")
 def campaigns_page():
     return render_template("campaigns.html", campaigns=db.list_campaigns())
@@ -110,7 +118,8 @@ def template_preview(template_name):
     config["contact_phone"] = "+91 92110 72781"
     config["contact_email"] = "info@yourcompany.com"
     config["contact_website"] = "www.yourcompany.com"
-    
+    config["cta_link"] = config["contact_email"]  # button opens a reply
+
     html = email_templates.build_professional_html_email(**config)
     return html
 
@@ -131,6 +140,8 @@ def template_api(template_name):
     template = templates[template_name]
     config = template["config"].copy()
     config["sender_name"] = config.get("sender_name", "")
+    if config.get("contact_email"):
+        config.setdefault("cta_link", config["contact_email"])
     
     body_html = email_templates.build_professional_html_email(**config)
     
@@ -189,16 +200,19 @@ def scrape_start():
         flash("Category is required.")
         return redirect(url_for("scrape_page"))
 
+    # Raise a ticket only. The actual scraping runs on your LOCAL PC via
+    # worker.py (which polls for pending jobs) — NOT here on Render,
+    # since Render can't run a real browser and gets IP-blocked by
+    # Google. The job sits as 'pending' until the local worker picks
+    # it up, runs your scraper, writes leads to this same database,
+    # and marks the ticket done.
     job_id = db.create_scrape_job(category, city, keywords, max_results)
 
-    thread = threading.Thread(
-        target=scraper.run_scrape_job,
-        args=(job_id, category, city, keywords, max_results),
-        daemon=True,
+    flash(
+        f"Scrape ticket #{job_id} raised for '{category}'"
+        + (f" in {city}" if city else "")
+        + ". Make sure worker.py is running on your PC — it'll pick this up shortly."
     )
-    thread.start()
-
-    flash(f"Scrape started for '{category}'" + (f" in {city}" if city else "") + ". Watch progress below.")
     return redirect(url_for("scrape_page"))
 
 

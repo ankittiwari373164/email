@@ -25,6 +25,10 @@
           <button class="btn btn-sm btn-outline-success">Reactivate now</button>
         </form>
         {% endif %}
+        <form method="post" action="/accounts/{{ a.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Remove {{ a.email }}? It will stop being used for sending.');">
+          <button class="btn btn-sm btn-outline-danger">Remove</button>
+        </form>
       </td>
     </tr>
     {% endfor %}

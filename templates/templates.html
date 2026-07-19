@@ -38,6 +38,26 @@
     </div>
 </div>
 
+<!-- Copyable output area -->
+<div id="copyArea" style="display:none; margin-top:30px;" class="card">
+    <div class="card-body">
+        <h5>📋 Copy into a New Campaign</h5>
+        <p class="text-muted small">Go to <a href="/campaigns">Campaigns</a>, then paste these into the Subject and Body fields.</p>
+        <div class="mb-3">
+            <label class="form-label"><strong>Subject</strong></label>
+            <div class="input-group">
+                <input type="text" id="copySubject" class="form-control" readonly>
+                <button class="btn btn-outline-primary" onclick="copyField('copySubject')">Copy</button>
+            </div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label"><strong>Body (HTML)</strong></label>
+            <textarea id="copyBody" class="form-control" rows="10" readonly style="font-family:monospace; font-size:12px;"></textarea>
+            <button class="btn btn-outline-primary mt-2" onclick="copyField('copyBody')">Copy Body</button>
+        </div>
+    </div>
+</div>
+
 <!-- Preview Modal -->
 <div class="modal fade" id="previewModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
@@ -69,14 +89,22 @@ function useTemplate(templateName) {
     fetch(`/api/templates/${templateName}`)
         .then(r => r.json())
         .then(data => {
-            // Populate campaign form with template data
-            document.getElementById('subject_template').value = data.subject;
-            document.getElementById('body_template').innerHTML = data.body;
-            document.getElementById('body_template').value = data.body;
-            alert(`✓ Template loaded! Scroll down to customize and save your campaign.`);
-            window.location.hash = '#campaign-form';
+            // The campaign form lives on /campaigns, not this page, so we
+            // can't inject directly. Show the generated subject + body in
+            // copyable boxes; user pastes into a new campaign.
+            document.getElementById('copySubject').value = data.subject;
+            document.getElementById('copyBody').value = data.body;
+            document.getElementById('copyArea').style.display = 'block';
+            document.getElementById('copyArea').scrollIntoView({behavior: 'smooth'});
         })
         .catch(err => alert('Error loading template: ' + err));
+}
+
+function copyField(id) {
+    const el = document.getElementById(id);
+    el.select();
+    document.execCommand('copy');
+    alert('Copied to clipboard!');
 }
 </script>
 {% endblock %}

@@ -2,10 +2,13 @@
 {% block content %}
 <h3>Scrape leads by category</h3>
 <p class="text-muted">
-  Type a category (e.g. "dentists", "interior designers", "real estate agents").
-  Add a city to narrow it down. This searches the web, visits business
-  sites, and pulls contact emails into your Leads list — new leads only,
-  duplicates are skipped automatically.
+  Type a category (e.g. "dentists", "interior designers", "real estate agents")
+  and optionally a city. Submitting raises a <strong>scrape ticket</strong> —
+  your local worker (worker.py running on your PC) picks it up, scrapes
+  LinkedIn / Instagram / JustDial / Facebook via real Chrome, and writes
+  new leads back here automatically. Duplicates are skipped.
+  <br>
+  <span class="text-warning">⚠ Make sure <code>worker.py</code> is running on your PC, or tickets will just sit as "pending".</span>
 </p>
 
 <form class="row g-2 mb-4" method="post" action="{{ url_for('scrape_start') }}">
@@ -18,12 +21,12 @@
   <div class="col-auto"><input class="form-control" name="city" placeholder="City (optional)"></div>
   <div class="col-auto"><input class="form-control" name="keywords" placeholder="Extra keywords (optional)"></div>
   <div class="col-auto">
-    <input class="form-control" style="width:110px" type="number" name="max_results" value="20" min="1" max="100" title="Max sites to check">
+    <input class="form-control" style="width:110px" type="number" name="max_results" value="20" min="1" max="100" title="Max results">
   </div>
-  <div class="col-auto"><button class="btn btn-primary">Start scrape</button></div>
+  <div class="col-auto"><button class="btn btn-primary">Raise scrape ticket</button></div>
 </form>
 
-<h5>Jobs</h5>
+<h5>Tickets</h5>
 <table class="table table-sm table-striped bg-white" id="jobs-table">
   <thead>
     <tr><th>ID</th><th>Category</th><th>City</th><th>Status</th><th>Sites checked</th><th>Emails found</th><th>New leads</th><th>Started</th><th></th></tr>
@@ -39,13 +42,13 @@
       <td data-field="emails_found">{{ j.emails_found }}</td>
       <td data-field="emails_inserted">{{ j.emails_inserted }}</td>
       <td>{{ j.started_at }}</td>
-      <td><button class="btn btn-sm btn-outline-secondary" onclick="toggleLog({{ j.id }})">Log</button></td>
+      <td><button class="btn btn-sm btn-outline-secondary log-btn" data-log-id="{{ j.id }}">Log</button></td>
     </tr>
     <tr id="job-log-{{ j.id }}" style="display:none">
       <td colspan="9"><pre class="bg-light p-2 mb-0" style="max-height:200px;overflow:auto" data-field="log">{{ j.log }}</pre></td>
     </tr>
   {% else %}
-    <tr><td colspan="9" class="text-muted">No scrape jobs yet — start one above.</td></tr>
+    <tr><td colspan="9" class="text-muted">No scrape tickets yet — raise one above.</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -56,13 +59,23 @@ function toggleLog(id) {
   row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
-// Poll every 3s and update any job row that's still running/queued.
+// Wire up Log buttons via data attribute (avoids inline Jinja in JS,
+// which confuses editors' linters even though it renders fine).
+document.querySelectorAll('.log-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    toggleLog(this.getAttribute('data-log-id'));
+  });
+});
+
+// Poll every 3s and update any ticket still pending/running/queued.
 async function pollJobs() {
   const rows = document.querySelectorAll("tr[id^='job-row-']");
   for (const row of rows) {
     const id = row.id.replace('job-row-', '');
     const statusBadge = row.querySelector("[data-field='status']");
-    if (!statusBadge || (statusBadge.textContent !== 'running' && statusBadge.textContent !== 'queued')) continue;
+    if (!statusBadge) continue;
+    const s = statusBadge.textContent.trim();
+    if (s !== 'running' && s !== 'queued' && s !== 'pending') continue;
     try {
       const res = await fetch('/api/scrape/status/' + id);
       if (!res.ok) continue;

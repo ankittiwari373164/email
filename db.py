@@ -252,6 +252,15 @@ def set_account_status(account_id, status, error=None):
         cur.execute("UPDATE accounts SET status=%s, last_error=%s WHERE id=%s", (status, error, account_id))
 
 
+def delete_account(account_id):
+    """Permanently remove a connected Gmail account. Its OAuth token is
+    deleted too, so it stops being used for sends immediately. Historical
+    messages already logged are left intact for record-keeping."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM accounts WHERE id=%s", (account_id,))
+
+
 # ---------- leads ----------
 
 def list_leads(status=None, category=None, city=None, verify_status=None, limit=200, offset=0):
@@ -408,13 +417,41 @@ def stats():
 # ---------- scrape jobs ----------
 
 def create_scrape_job(category, city, keywords, max_results):
+    """Raise a scrape ticket. It sits as 'pending' until the local
+    worker (worker.py running on your PC) claims and runs it."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO scrape_jobs (category, city, keywords, max_results, status, started_at)
-            VALUES (%s, %s, %s, %s, 'queued', %s) RETURNING id
-        """, (category, city, keywords, max_results, datetime.utcnow()))
+            INSERT INTO scrape_jobs (category, city, keywords, max_results, status)
+            VALUES (%s, %s, %s, %s, 'pending') RETURNING id
+        """, (category, city, keywords, max_results))
         return cur.fetchone()["id"]
+
+
+def claim_next_pending_job():
+    """Atomically grab the oldest pending job and mark it 'running' so
+    two worker instances can't pick up the same job. Returns the job
+    dict, or None if nothing is pending. Uses FOR UPDATE SKIP LOCKED
+    so concurrent workers each get a different row."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id FROM scrape_jobs
+            WHERE status = 'pending'
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        """)
+        row = cur.fetchone()
+        if not row:
+            return None
+        job_id = row["id"]
+        cur.execute(
+            "UPDATE scrape_jobs SET status='running', started_at=%s WHERE id=%s",
+            (datetime.utcnow(), job_id),
+        )
+        cur.execute("SELECT * FROM scrape_jobs WHERE id=%s", (job_id,))
+        return dict(cur.fetchone())
 
 
 def update_scrape_job(job_id, **fields):
