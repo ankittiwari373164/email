@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="max-width:360px;margin:60px auto;">
+  <div class="card">
+    <div class="card-body">
+      <h4 class="mb-3">Dashboard Login</h4>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          {% for m in messages %}<div class="alert alert-warning py-2">{{ m }}</div>{% endfor %}
+        {% endif %}
+      {% endwith %}
+      <form method="post">
+        <div class="mb-3">
+          <label class="form-label">Password</label>
+          <input type="password" name="password" class="form-control" autofocus required>
+        </div>
+        <button class="btn btn-primary w-100">Log in</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
