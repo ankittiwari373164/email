@@ -43,12 +43,37 @@ def render_template(template, lead):
     )
 
 
+def _append_unsubscribe(body, lead_id):
+    """Append a minimal, unobtrusive unsubscribe line at the very bottom.
+    Required for bulk sending (Gmail sender guidelines + anti-spam law)
+    and a strong deliverability signal. Detects HTML vs plain body so it
+    injects correctly either way."""
+    unsub_url = f"{config.PUBLIC_BASE_URL}/unsubscribe/{lead_id}"
+    lowered = (body or "").lower()
+    is_html = lowered.lstrip().startswith(("<!doctype", "<html")) or "<body" in lowered
+
+    if is_html:
+        footer = (
+            '<div style="text-align:center;color:#9aa4b2;font-size:11px;'
+            'line-height:1.6;padding:16px 10px;font-family:sans-serif;">'
+            f'If you\'d prefer not to receive these emails, you can '
+            f'<a href="{unsub_url}" style="color:#9aa4b2;text-decoration:underline;">unsubscribe here</a>.'
+            '</div>'
+        )
+        if "</body>" in lowered:
+            idx = lowered.rindex("</body>")
+            return body[:idx] + footer + body[idx:]
+        return body + footer
+    else:
+        return body + f"\n\n---\nIf you'd prefer not to receive these emails, unsubscribe: {unsub_url}"
+
+
 def send_one(lead, account, campaign, sender_name=None):
     subject = render_template(campaign["subject_template"], lead)
     full_body = render_template(campaign["body_template"], lead)
-    # No auto-appended footer/unsubscribe link — the template body is
-    # sent exactly as written, since the campaign's own message already
-    # includes whatever sign-off/footer it needs.
+    # Append a minimal unsubscribe footer at the very bottom — required
+    # for bulk sending and important for staying out of spam.
+    full_body = _append_unsubscribe(full_body, lead["id"])
 
     image_bytes = None
     if campaign.get("image_base64"):
