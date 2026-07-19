@@ -79,17 +79,57 @@ def get_profile_email(creds):
     return profile["emailAddress"]
 
 
+def _looks_like_html(text):
+    """True if the body is already HTML (from the template builder) rather
+    than plain typed text. If so we must send it as text/html or the
+    recipient sees raw <html> source instead of a formatted email."""
+    if not text:
+        return False
+    lowered = text.lstrip()[:200].lower()
+    return lowered.startswith("<!doctype") or lowered.startswith("<html") or "<body" in text.lower()
+
+
+def _html_to_plain(html):
+    """Rough plain-text fallback for HTML emails, shown by clients that
+    block HTML. Strips tags; not pretty, just readable."""
+    import re as _re
+    import html as _html
+    # drop style/script blocks entirely
+    text = _re.sub(r"<(style|script)[^>]*>.*?</\1>", "", html, flags=_re.DOTALL | _re.IGNORECASE)
+    text = _re.sub(r"<br\s*/?>", "\n", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"</(p|div|tr|h[1-6])>", "\n", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"<[^>]+>", "", text)          # remaining tags
+    text = _html.unescape(text)
+    text = _re.sub(r"\n\s*\n\s*\n+", "\n\n", text)  # collapse blank lines
+    return text.strip()
+
+
+def _make_body_part(body_text):
+    """Return a MIME part for the body — text/html if it's HTML,
+    otherwise text/plain. For HTML, wraps in a multipart/alternative
+    with a plain-text fallback."""
+    if _looks_like_html(body_text):
+        from email.mime.multipart import MIMEMultipart
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(_html_to_plain(body_text), "plain", "utf-8"))
+        alt.attach(MIMEText(body_text, "html", "utf-8"))
+        return alt
+    return MIMEText(body_text, "plain", "utf-8")
+
+
 def send_email(account, to_addr, subject, body_text, thread_id=None,
                 in_reply_to=None, references=None,
                 image_bytes=None, image_filename=None, image_mime=None, image_placement="attachment"):
     """Send an email via Gmail API. Returns (message_id, thread_id).
 
+    The body is auto-detected: if it's HTML (from the template builder)
+    it's sent as text/html with a plain-text fallback; otherwise as
+    plain text. This is what makes template emails render as a formatted
+    email instead of showing raw <html> source.
+
     If image_bytes is given:
       - image_placement='inline'     -> shown in the email body itself
-        (HTML email, <img src="cid:...">, with a plain-text part too so
-        clients that block HTML images still show the text).
-      - image_placement='attachment' (default) -> plain-text email with
-        the image as a regular file attachment.
+      - image_placement='attachment' (default) -> image as a file attachment
     """
     service = get_service(account)
 
@@ -100,7 +140,12 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
         mime_msg = _build_attachment_message(to_addr, subject, body_text,
                                               image_bytes, image_filename, image_mime)
     else:
-        mime_msg = MIMEText(body_text)
+        body_part = _make_body_part(body_text)
+        if body_part.get_content_maintype() == "multipart":
+            # already a multipart/alternative; use it directly as the message
+            mime_msg = body_part
+        else:
+            mime_msg = body_part
         mime_msg["to"] = to_addr
         mime_msg["subject"] = subject
 
@@ -134,10 +179,22 @@ def _build_inline_image_message(to_addr, subject, body_text, image_bytes, image_
     alt = MIMEMultipart("alternative")
     msg.attach(alt)
 
-    alt.attach(MIMEText(body_text, "plain"))
+    img_tag = '<br><img src="cid:campaign_image" style="max-width:100%">'
+    if _looks_like_html(body_text):
+        # Body is already HTML from the template builder — inject the
+        # image before </body> (or append) instead of escaping it.
+        plain_fallback = _html_to_plain(body_text)
+        if "</body>" in body_text.lower():
+            idx = body_text.lower().rindex("</body>")
+            html_body = body_text[:idx] + img_tag + body_text[idx:]
+        else:
+            html_body = body_text + img_tag
+    else:
+        plain_fallback = body_text
+        html_body = _text_to_html(body_text) + img_tag
 
-    html_body = _text_to_html(body_text) + '<br><img src="cid:campaign_image" style="max-width:100%">'
-    alt.attach(MIMEText(html_body, "html"))
+    alt.attach(MIMEText(plain_fallback, "plain", "utf-8"))
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
 
     subtype = (image_mime or "image/png").split("/")[-1]
     img_part = MIMEImage(image_bytes, _subtype=subtype)
@@ -155,7 +212,9 @@ def _build_attachment_message(to_addr, subject, body_text, image_bytes, image_fi
     msg = MIMEMultipart("mixed")
     msg["to"] = to_addr
     msg["subject"] = subject
-    msg.attach(MIMEText(body_text, "plain"))
+    # Send HTML as text/html (with plain fallback) when the body is HTML,
+    # otherwise plain text — same auto-detection as the no-image path.
+    msg.attach(_make_body_part(body_text))
 
     subtype = (image_mime or "image/png").split("/")[-1]
     img_part = MIMEImage(image_bytes, _subtype=subtype)
