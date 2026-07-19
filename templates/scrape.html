@@ -2,13 +2,16 @@
 {% block content %}
 <h3>Scrape leads by category</h3>
 <p class="text-muted">
-  Type a category (e.g. "dentists", "interior designers", "real estate agents")
-  and optionally a city. Submitting raises a <strong>scrape ticket</strong> —
-  your local worker (worker.py running on your PC) picks it up, scrapes
-  LinkedIn / Instagram / JustDial / Facebook via real Chrome, and writes
-  new leads back here automatically. Duplicates are skipped.
+  Type a category (e.g. "dentists", "interior designers", "real estate agents").
+  <strong>Leave the city blank to sweep every Indian state one by one</strong>,
+  or enter a city to scrape just that one. Your local worker (worker.py on
+  your PC) picks up the ticket, scrapes LinkedIn / Instagram / JustDial /
+  Facebook via real Chrome, and writes new leads back here automatically.
+  Duplicates are skipped.
   <br>
   <span class="text-warning">⚠ Make sure <code>worker.py</code> is running on your PC, or tickets will just sit as "pending".</span>
+  <br>
+  <span class="text-info">ℹ An all-states sweep takes a long time (37 regions × 4 platforms). It updates live — watch the Log.</span>
 </p>
 
 <form class="row g-2 mb-4" method="post" action="{{ url_for('scrape_start') }}">
