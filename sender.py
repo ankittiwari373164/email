@@ -24,13 +24,21 @@ import config
 import db
 import gmail_client
 import smtp_client
+import resend_client
 import os
 
-# Choose the sending backend. If SMTP is configured (you're sending from
-# your own authenticated domain via Hostinger/etc), use it — that's what
-# keeps mail out of spam. Otherwise fall back to the Gmail API client.
-_USE_SMTP = bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
-_mailer = smtp_client if _USE_SMTP else gmail_client
+# Choose the sending backend, in priority order:
+#  1. Resend  — HTTP API over HTTPS. Works on Render's free tier (which
+#     blocks outbound SMTP ports). Preferred for domain sending here.
+#  2. SMTP    — direct smtp.hostinger.com. Works on paid Render / local,
+#     but NOT Render free tier (SMTP ports blocked there).
+#  3. Gmail   — original OAuth path, fallback if nothing else configured.
+if os.environ.get("RESEND_API_KEY") and os.environ.get("RESEND_FROM"):
+    _mailer = resend_client
+elif os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
+    _mailer = smtp_client
+else:
+    _mailer = gmail_client
 
 # Substrings in a Gmail API error that indicate the ACCOUNT itself is the
 # problem (auth broke, whole-account quota), vs. a one-off per-recipient
