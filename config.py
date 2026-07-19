@@ -63,6 +63,12 @@ AUTO_AUTOMATION_ENABLED = os.environ.get("AUTO_AUTOMATION", "true").lower() != "
 
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production")
 
+# Set DASHBOARD_PASSWORD in Render's environment to require a password
+# to access the dashboard. If left unset/empty, the dashboard is open
+# (useful for local dev). Recipients' unsubscribe links, /health, and
+# the OAuth callback stay accessible without it.
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+
 EMAIL_FOOTER_TEMPLATE = """
 
 --
