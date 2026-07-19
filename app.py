@@ -119,30 +119,40 @@ def leads_page():
 @app.route("/accounts")
 def accounts_page():
     import os
+    resend_configured = bool(os.environ.get("RESEND_API_KEY") and os.environ.get("RESEND_FROM"))
     smtp_configured = bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
-    smtp_user = os.environ.get("SMTP_USER", "")
+    if resend_configured:
+        raw_from = os.environ.get("RESEND_FROM", "")
+        domain_user = raw_from.split("<")[-1].strip(" <>") if "<" in raw_from else raw_from
+    else:
+        domain_user = os.environ.get("SMTP_USER", "")
     return render_template(
         "accounts.html",
         accounts=db.list_accounts(),
+        resend_configured=resend_configured,
         smtp_configured=smtp_configured,
-        smtp_user=smtp_user,
+        domain_user=domain_user,
     )
 
 
 @app.route("/accounts/register-smtp", methods=["POST"])
 def accounts_register_smtp():
-    """Register the configured SMTP mailbox as a sending account, so its
-    daily-limit counter and send logging work. No OAuth needed — sending
-    happens over SMTP using the SMTP_* env vars."""
+    """Register the configured domain sender (Resend or SMTP) as a sending
+    account, so its daily-limit counter and send logging work. No OAuth."""
     import os
+    resend_from = os.environ.get("RESEND_FROM", "")
     smtp_user = os.environ.get("SMTP_USER", "")
-    if not smtp_user:
-        flash("SMTP_USER is not set in the environment.")
-        return redirect(url_for("accounts_page"))
-    display = os.environ.get("SMTP_FROM_NAME", "") or smtp_user
-    # token_json is unused for SMTP sending; store a marker.
-    db.add_or_update_account(smtp_user, display, "SMTP")
-    flash(f"Registered {smtp_user} as an SMTP sending account.")
+    if resend_from:
+        addr = resend_from.split("<")[-1].strip(" <>") if "<" in resend_from else resend_from
+        display = resend_from.split("<")[0].strip() or addr
+        db.add_or_update_account(addr, display, "RESEND")
+        flash(f"Registered {addr} as a Resend sending account.")
+    elif smtp_user:
+        display = os.environ.get("SMTP_FROM_NAME", "") or smtp_user
+        db.add_or_update_account(smtp_user, display, "SMTP")
+        flash(f"Registered {smtp_user} as an SMTP sending account.")
+    else:
+        flash("No domain sender configured (set RESEND_API_KEY + RESEND_FROM, or SMTP_*).")
     return redirect(url_for("accounts_page"))
 
 
