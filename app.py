@@ -19,12 +19,23 @@ import verify
 app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
 
+from datetime import timedelta
+app.permanent_session_lifetime = timedelta(days=7)
+
 # Allow OAuth over http:// for local dev only. In production PUBLIC_BASE_URL
 # should be https:// (Render gives you this for free) so this env var
 # simply won't matter there.
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 _db_ready = False
+
+# Paths reachable WITHOUT logging in:
+#  - /login itself
+#  - /health for UptimeRobot
+#  - /unsubscribe/* so recipients can opt out without a dashboard account
+#  - /oauth2callback so Google can complete the OAuth redirect
+#  - /static for CSS
+PUBLIC_PATH_PREFIXES = ("/login", "/health", "/unsubscribe", "/oauth2callback", "/static")
 
 
 @app.before_request
@@ -33,6 +44,45 @@ def _ensure_db():
     if not _db_ready:
         db.init_db()
         _db_ready = True
+
+
+@app.before_request
+def _require_login():
+    # Skip auth for public paths
+    path = request.path
+    if any(path == p or path.startswith(p + "/") or path.startswith(p) for p in PUBLIC_PATH_PREFIXES):
+        return None
+    # If no dashboard password is configured, don't lock anyone out.
+    if not config.DASHBOARD_PASSWORD:
+        return None
+    if session.get("authed"):
+        return None
+    return redirect(url_for("login", next=path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not config.DASHBOARD_PASSWORD:
+        # No password set — nothing to log into.
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        if request.form.get("password") == config.DASHBOARD_PASSWORD:
+            session["authed"] = True
+            session.permanent = True
+            nxt = request.args.get("next") or url_for("dashboard")
+            # only allow same-site relative redirects
+            if not nxt.startswith("/"):
+                nxt = url_for("dashboard")
+            return redirect(nxt)
+        flash("Wrong password.")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.pop("authed", None)
+    flash("Logged out.")
+    return redirect(url_for("login"))
 
 
 # ---------------- Dashboard pages ----------------
