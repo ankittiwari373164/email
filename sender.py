@@ -27,13 +27,23 @@ import smtp_client
 import resend_client
 import os
 
-# Choose the sending backend, in priority order:
-#  1. Resend  — HTTP API over HTTPS. Works on Render's free tier (which
-#     blocks outbound SMTP ports). Preferred for domain sending here.
-#  2. SMTP    — direct smtp.hostinger.com. Works on paid Render / local,
-#     but NOT Render free tier (SMTP ports blocked there).
-#  3. Gmail   — original OAuth path, fallback if nothing else configured.
-if os.environ.get("RESEND_API_KEY") and os.environ.get("RESEND_FROM"):
+# Choose the sending backend.
+#
+# Set MAIL_BACKEND explicitly to force one: "gmail", "resend", or "smtp".
+# If unset, auto-detect in priority order: Resend -> SMTP -> Gmail.
+#
+#  - gmail  : original OAuth path, 5 accounts x 500/day, rotates accounts.
+#  - resend : HTTP API over HTTPS (works on Render free tier).
+#  - smtp   : direct smtp.hostinger.com (NOT on Render free tier).
+_backend = os.environ.get("MAIL_BACKEND", "").strip().lower()
+
+if _backend == "gmail":
+    _mailer = gmail_client
+elif _backend == "resend":
+    _mailer = resend_client
+elif _backend == "smtp":
+    _mailer = smtp_client
+elif os.environ.get("RESEND_API_KEY") and os.environ.get("RESEND_FROM"):
     _mailer = resend_client
 elif os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
     _mailer = smtp_client
@@ -82,6 +92,21 @@ def _append_unsubscribe(body, lead_id):
         return body + footer
     else:
         return body + f"\n\n---\nIf you'd prefer not to receive these emails, unsubscribe: {unsub_url}"
+
+
+def _is_valid_email(email):
+    """Reject malformed addresses (e.g. double-@ like foo@gmail.com@gmail.com
+    from a bad scrape) before handing them to the mail API, which would
+    otherwise 4xx/403 the whole send."""
+    if not email:
+        return False
+    # exactly one @, non-empty local + domain, domain has a dot, no spaces
+    if email.count("@") != 1:
+        return False
+    local, _, domain = email.partition("@")
+    if not local or not domain or "." not in domain or " " in email:
+        return False
+    return True
 
 
 def send_one(lead, account, campaign, sender_name=None):
@@ -175,7 +200,8 @@ def run_campaign(campaign_id, max_sends=None):
             limit=5,
         )
         leads = [l for l in leads if not l.get("unsubscribed") and l.get("mx_valid")
-                 and l.get("verify_status") != "invalid"]
+                 and l.get("verify_status") != "invalid"
+                 and _is_valid_email(l.get("email"))]
         if not leads:
             break
 
