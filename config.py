@@ -18,7 +18,14 @@ if not DATABASE_URL:
     )
 
 # ---------------- Gmail OAuth ----------------
-CLIENT_SECRET_FILE = os.path.join(BASE_DIR, "credentials", "client_secret.json")
+# Render stores "Secret Files" at /etc/secrets/<filename>. Locally we
+# keep it in credentials/. Check the Render location first, then fall
+# back to the local project folder, then an explicit env override.
+_RENDER_SECRET = "/etc/secrets/client_secret.json"
+_LOCAL_SECRET = os.path.join(BASE_DIR, "credentials", "client_secret.json")
+CLIENT_SECRET_FILE = os.environ.get("CLIENT_SECRET_FILE") or (
+    _RENDER_SECRET if os.path.exists(_RENDER_SECRET) else _LOCAL_SECRET
+)
 TOKENS_DIR = os.path.join(BASE_DIR, "tokens")
 
 GMAIL_SCOPES = [
@@ -56,7 +63,16 @@ AUTO_AUTOMATION_ENABLED = os.environ.get("AUTO_AUTOMATION", "true").lower() != "
 
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production")
 
+EMAIL_FOOTER_TEMPLATE = """
 
+--
+{sender_name}
+
+Unsubscribe: {unsubscribe_link}
+"""
+
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Your Company Name")
+COMPANY_ADDRESS = os.environ.get("COMPANY_ADDRESS", "Your Company Address, City, India")
 
 # ---------------- Lead discovery (Scrape page) ----------------
 # DuckDuckGo/Bing HTML scraping got unreliable (both now return 403 to
