@@ -118,7 +118,32 @@ def leads_page():
 
 @app.route("/accounts")
 def accounts_page():
-    return render_template("accounts.html", accounts=db.list_accounts())
+    import os
+    smtp_configured = bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    return render_template(
+        "accounts.html",
+        accounts=db.list_accounts(),
+        smtp_configured=smtp_configured,
+        smtp_user=smtp_user,
+    )
+
+
+@app.route("/accounts/register-smtp", methods=["POST"])
+def accounts_register_smtp():
+    """Register the configured SMTP mailbox as a sending account, so its
+    daily-limit counter and send logging work. No OAuth needed — sending
+    happens over SMTP using the SMTP_* env vars."""
+    import os
+    smtp_user = os.environ.get("SMTP_USER", "")
+    if not smtp_user:
+        flash("SMTP_USER is not set in the environment.")
+        return redirect(url_for("accounts_page"))
+    display = os.environ.get("SMTP_FROM_NAME", "") or smtp_user
+    # token_json is unused for SMTP sending; store a marker.
+    db.add_or_update_account(smtp_user, display, "SMTP")
+    flash(f"Registered {smtp_user} as an SMTP sending account.")
+    return redirect(url_for("accounts_page"))
 
 
 @app.route("/accounts/<int:account_id>/reactivate", methods=["POST"])
