@@ -23,6 +23,14 @@ from datetime import datetime
 import config
 import db
 import gmail_client
+import smtp_client
+import os
+
+# Choose the sending backend. If SMTP is configured (you're sending from
+# your own authenticated domain via Hostinger/etc), use it — that's what
+# keeps mail out of spam. Otherwise fall back to the Gmail API client.
+_USE_SMTP = bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
+_mailer = smtp_client if _USE_SMTP else gmail_client
 
 # Substrings in a Gmail API error that indicate the ACCOUNT itself is the
 # problem (auth broke, whole-account quota), vs. a one-off per-recipient
@@ -80,7 +88,7 @@ def send_one(lead, account, campaign, sender_name=None):
         import base64
         image_bytes = base64.b64decode(campaign["image_base64"])
 
-    message_id, thread_id = gmail_client.send_email(
+    message_id, thread_id = _mailer.send_email(
         account, lead["email"], subject, full_body,
         image_bytes=image_bytes,
         image_filename=campaign.get("image_filename"),
