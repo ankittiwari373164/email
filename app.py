@@ -110,7 +110,8 @@ def template_preview(template_name):
     config["contact_phone"] = "+91 92110 72781"
     config["contact_email"] = "info@yourcompany.com"
     config["contact_website"] = "www.yourcompany.com"
-    
+    config["cta_link"] = config["contact_email"]  # button opens a reply
+
     html = email_templates.build_professional_html_email(**config)
     return html
 
@@ -131,6 +132,8 @@ def template_api(template_name):
     template = templates[template_name]
     config = template["config"].copy()
     config["sender_name"] = config.get("sender_name", "")
+    if config.get("contact_email"):
+        config.setdefault("cta_link", config["contact_email"])
     
     body_html = email_templates.build_professional_html_email(**config)
     
