@@ -22,33 +22,11 @@ from datetime import datetime
 
 import config
 import db
-import gmail_client
-import smtp_client
-import resend_client
+import multi_provider
 import os
 
-# Choose the sending backend.
-#
-# Set MAIL_BACKEND explicitly to force one: "gmail", "resend", or "smtp".
-# If unset, auto-detect in priority order: Resend -> SMTP -> Gmail.
-#
-#  - gmail  : original OAuth path, 5 accounts x 500/day, rotates accounts.
-#  - resend : HTTP API over HTTPS (works on Render free tier).
-#  - smtp   : direct smtp.hostinger.com (NOT on Render free tier).
-_backend = os.environ.get("MAIL_BACKEND", "").strip().lower()
-
-if _backend == "gmail":
-    _mailer = gmail_client
-elif _backend == "resend":
-    _mailer = resend_client
-elif _backend == "smtp":
-    _mailer = smtp_client
-elif os.environ.get("RESEND_API_KEY") and os.environ.get("RESEND_FROM"):
-    _mailer = resend_client
-elif os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
-    _mailer = smtp_client
-else:
-    _mailer = gmail_client
+# Multi-provider mode: rotates across 6 providers + 10 domains
+_mailer = multi_provider
 
 # Substrings in a Gmail API error that indicate the ACCOUNT itself is the
 # problem (auth broke, whole-account quota), vs. a one-off per-recipient
@@ -121,13 +99,20 @@ def send_one(lead, account, campaign, sender_name=None):
         import base64
         image_bytes = base64.b64decode(campaign["image_base64"])
 
-    message_id, thread_id = _mailer.send_email(
+    result = _mailer.send_email(
         account, lead["email"], subject, full_body,
         image_bytes=image_bytes,
         image_filename=campaign.get("image_filename"),
         image_mime=campaign.get("image_mime"),
         image_placement=campaign.get("image_placement") or "attachment",
     )
+    
+    # Multi-provider returns (msg_id, thread_id, provider, domain)
+    if len(result) == 4:
+        message_id, thread_id, provider, domain = result
+    else:
+        message_id, thread_id = result
+        provider, domain = "unknown", "unknown"
 
     db.log_message(
         lead_id=lead["id"], account_id=account["id"], campaign_id=campaign["id"],
@@ -135,7 +120,9 @@ def send_one(lead, account, campaign, sender_name=None):
         subject=subject, snippet=full_body[:200], body=full_body,
         from_addr=account["email"], to_addr=lead["email"],
     )
-    db.update_lead_after_send(lead["id"], account["email"], thread_id)
+    # Store provider/domain info in the message log as notes or extended field
+    # For now, we'll add it to the snippet so you can see it in logs
+    db.update_lead_after_send(lead["id"], f"{account['email']} via {provider}@{domain}", thread_id)
     db.increment_sent_count(account["id"])
     return message_id, thread_id
 
