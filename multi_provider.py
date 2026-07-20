@@ -15,6 +15,7 @@ Provider → Domain mapping:
 Tracks which provider/domain sent each email for monitoring.
 """
 import os
+import sys
 
 # Import all provider clients
 import brevo_client
@@ -100,6 +101,7 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
         os.environ[env_key] = f"Manofox <info@{domain}>"
 
     try:
+        print(f"[DEBUG] Sending via {provider_name} from info@{domain} to {to_addr}", file=sys.stderr)
         msg_id, tid = provider_module.send_email(
             account, to_addr, subject, body_text,
             thread_id=thread_id,
@@ -110,7 +112,11 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
             image_mime=image_mime,
             image_placement=image_placement,
         )
+        print(f"[DEBUG] SUCCESS: {provider_name} sent message {msg_id}", file=sys.stderr)
         return msg_id, tid, provider_name, domain
+    except Exception as e:
+        print(f"[ERROR] {provider_name} failed: {str(e)}", file=sys.stderr)
+        raise
     finally:
         # Restore original FROM
         if env_key and old_from is not None:
