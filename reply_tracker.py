@@ -32,6 +32,12 @@ def _looks_like_bounce(msg):
 def poll_account(account):
     """Check one account's inbox for messages in threads we own."""
     new_replies = 0
+    
+    # Skip non-Gmail accounts (e.g., Resend/Mailjet/SendGrid senders)
+    # Only Gmail accounts have inboxes to poll for replies
+    if not account["email"].endswith("@gmail.com"):
+        return 0
+    
     try:
         message_ids = gmail_client.list_recent_message_ids(
             account, query="in:inbox newer_than:14d"
