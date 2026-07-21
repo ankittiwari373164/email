@@ -1,21 +1,22 @@
 """
-Multi-provider email router with fixed domain mapping.
+Multi-provider email router with fixed domain mapping and per-provider daily limits.
 
-Each provider is assigned one domain. Sends rotate through providers only,
-each always using its assigned domain.
+Each provider is assigned one domain and has its own daily send limit.
+Sends rotate through providers, respecting each provider's free tier limit.
 
-Provider → Domain mapping:
-  - Brevo     → BREVO_DOMAIN
-  - Mailjet   → MAILJET_DOMAIN
-  - SendGrid  → SENDGRID_DOMAIN
-  - Mailgun   → MAILGUN_DOMAIN
-  - Elastic   → ELASTIC_DOMAIN
-  - Resend    → RESEND_DOMAIN
+Provider → Domain → Daily Limit mapping:
+  - Brevo     → BREVO_DOMAIN → 300/day
+  - Mailjet   → MAILJET_DOMAIN → 200/day
+  - SendGrid  → SENDGRID_DOMAIN → 100/day
+  - Mailgun   → MAILGUN_DOMAIN → 100/day
+  - Elastic   → ELASTIC_DOMAIN → 100/day
+  - Resend    → RESEND_DOMAIN → 100/day
 
-Tracks which provider/domain sent each email for monitoring.
+Tracks sends per provider and blocks when daily limit reached.
 """
 import os
 import sys
+from datetime import datetime
 
 # Import all provider clients
 import brevo_client
@@ -44,22 +45,69 @@ PROVIDER_DOMAINS = {
     "resend": os.environ.get("RESEND_DOMAIN", ""),
 }
 
+# Provider → Daily limit (free tier)
+PROVIDER_DAILY_LIMITS = {
+    "brevo": 300,
+    "mailjet": 200,
+    "sendgrid": 100,
+    "mailgun": 100,
+    "elasticemail": 100,
+    "resend": 100,
+}
+
+# Track sends per provider per day: {provider_name: {date: count}}
+_provider_send_counts = {p[0]: {} for p in PROVIDERS}
+
 # Track which provider sends next (rotation)
 _provider_index = 0
 
 
+def _get_today_date():
+    """Get today's date as YYYY-MM-DD for tracking."""
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _increment_provider_count(provider_name):
+    """Increment send count for provider today."""
+    today = _get_today_date()
+    if today not in _provider_send_counts[provider_name]:
+        _provider_send_counts[provider_name][today] = 0
+    _provider_send_counts[provider_name][today] += 1
+
+
+def _get_provider_count(provider_name):
+    """Get send count for provider today."""
+    today = _get_today_date()
+    return _provider_send_counts[provider_name].get(today, 0)
+
+
+def _has_capacity(provider_name):
+    """Check if provider still has capacity for today."""
+    count = _get_provider_count(provider_name)
+    limit = PROVIDER_DAILY_LIMITS.get(provider_name, 100)
+    return count < limit
+
+
 def _get_next_provider():
-    """Return next provider in rotation, with its domain."""
+    """Return next provider in rotation that has capacity, with its domain."""
     global _provider_index
     if not PROVIDERS:
         raise RuntimeError("No providers configured")
     
-    provider_name, provider_module = PROVIDERS[_provider_index % len(PROVIDERS)]
-    domain = PROVIDER_DOMAINS.get(provider_name, "")
+    # Find the next provider with available capacity
+    attempts = 0
+    while attempts < len(PROVIDERS):
+        provider_name, provider_module = PROVIDERS[_provider_index % len(PROVIDERS)]
+        _provider_index += 1
+        attempts += 1
+        
+        # Check if this provider has capacity
+        if _has_capacity(provider_name):
+            domain = PROVIDER_DOMAINS.get(provider_name, "")
+            return provider_name, provider_module, domain
     
-    _provider_index += 1
-    
-    return provider_name, provider_module, domain
+    # All providers hit their daily limit
+    raise RuntimeError("All providers have reached their daily send limits")
 
 
 def send_email(account, to_addr, subject, body_text, thread_id=None,
@@ -101,7 +149,7 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
         os.environ[env_key] = f"Manofox <info@{domain}>"
 
     try:
-        print(f"[DEBUG] Sending via {provider_name} from info@{domain} to {to_addr}", file=sys.stderr)
+        print(f"[DEBUG] Sending via {provider_name} from info@{domain} to {to_addr} (capacity: {_get_provider_count(provider_name)}/{PROVIDER_DAILY_LIMITS[provider_name]})", file=sys.stderr)
         msg_id, tid = provider_module.send_email(
             account, to_addr, subject, body_text,
             thread_id=thread_id,
@@ -112,7 +160,9 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
             image_mime=image_mime,
             image_placement=image_placement,
         )
-        print(f"[DEBUG] SUCCESS: {provider_name} sent message {msg_id}", file=sys.stderr)
+        _increment_provider_count(provider_name)
+        count = _get_provider_count(provider_name)
+        print(f"[DEBUG] SUCCESS: {provider_name} sent message {msg_id} ({count}/{PROVIDER_DAILY_LIMITS[provider_name]} today)", file=sys.stderr)
         return msg_id, tid, provider_name, domain
     except Exception as e:
         print(f"[ERROR] {provider_name} failed: {str(e)}", file=sys.stderr)
@@ -124,10 +174,16 @@ def send_email(account, to_addr, subject, body_text, thread_id=None,
 
 
 def get_provider_stats():
-    """Return provider info for logging/debugging."""
+    """Return provider info including daily send counts."""
+    today = _get_today_date()
     stats = {
         "providers": [name for name, _ in PROVIDERS],
         "provider_domains": PROVIDER_DOMAINS,
+        "provider_daily_limits": PROVIDER_DAILY_LIMITS,
+        "today": today,
+        "provider_counts": {
+            name: _get_provider_count(name) for name, _ in PROVIDERS
+        },
         "next_provider_index": _provider_index,
     }
     return stats
